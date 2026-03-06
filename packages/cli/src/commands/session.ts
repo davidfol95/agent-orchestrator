@@ -7,6 +7,8 @@ import {
   loadConfig,
   SessionNotRestorableError,
   WorkspaceMissingError,
+  type OrchestratorConfig,
+  type SessionManager,
 } from "@composio/ao-core";
 import { git, getTmuxActivity } from "../lib/shell.js";
 import { formatAge } from "../lib/format.js";
@@ -65,11 +67,11 @@ function getArchivedSessionIds(configPath: string, projectPath: string): Set<str
 }
 
 async function pruneSessionBranches(
+  config: OrchestratorConfig,
+  sm: SessionManager,
   projectId: string | undefined,
   dryRun: boolean | undefined,
 ): Promise<BranchPruneResult> {
-  const config = loadConfig();
-  const sm = await getSessionManager(config);
   const result: BranchPruneResult = { deleted: [], skipped: [], errors: [] };
 
   const entries = Object.entries(config.projects).filter(([id]) => !projectId || id === projectId);
@@ -266,7 +268,7 @@ export function registerSession(program: Command): void {
         }
 
         if (shouldPruneBranches) {
-          const prune = await pruneSessionBranches(opts.project, true);
+          const prune = await pruneSessionBranches(config, sm, opts.project, true);
           if (prune.deleted.length === 0 && prune.errors.length === 0) {
             console.log(chalk.dim("  No session branches would be pruned."));
           } else {
@@ -298,7 +300,7 @@ export function registerSession(program: Command): void {
         }
 
         if (shouldPruneBranches) {
-          const prune = await pruneSessionBranches(opts.project, false);
+          const prune = await pruneSessionBranches(config, sm, opts.project, false);
           if (prune.deleted.length > 0) {
             for (const branch of prune.deleted) {
               console.log(chalk.green(`  Pruned branch: ${branch}`));
