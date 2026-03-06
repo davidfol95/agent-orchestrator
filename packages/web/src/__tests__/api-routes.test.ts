@@ -83,6 +83,7 @@ const mockSessionManager: SessionManager = {
   }),
   cleanup: vi.fn(async () => ({ killed: [], skipped: [], errors: [] })),
   spawnOrchestrator: vi.fn(),
+  remap: vi.fn(async () => "ses_mock"),
   restore: vi.fn(async (id: string) => {
     const session = testSessions.find((s) => s.id === id);
     if (!session) {
@@ -161,6 +162,7 @@ import { POST as spawnPOST } from "@/app/api/spawn/route";
 import { POST as sendPOST } from "@/app/api/sessions/[id]/send/route";
 import { POST as killPOST } from "@/app/api/sessions/[id]/kill/route";
 import { POST as restorePOST } from "@/app/api/sessions/[id]/restore/route";
+import { POST as remapPOST } from "@/app/api/sessions/[id]/remap/route";
 import { POST as mergePOST } from "@/app/api/prs/[id]/merge/route";
 import { GET as eventsGET } from "@/app/api/events/route";
 
@@ -378,6 +380,38 @@ describe("API Routes", () => {
       expect(res.status).toBe(409);
       const data = await res.json();
       expect(data.error).toMatch(/not in a terminal state/);
+    });
+  });
+
+  describe("POST /api/sessions/:id/remap", () => {
+    it("remaps a valid session", async () => {
+      const req = makeRequest("/api/sessions/backend-3/remap", { method: "POST" });
+      const res = await remapPOST(req, { params: Promise.resolve({ id: "backend-3" }) });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.ok).toBe(true);
+      expect(data.opencodeSessionId).toBe("ses_mock");
+      expect(mockSessionManager.remap).toHaveBeenCalledWith("backend-3", true);
+    });
+
+    it("returns 404 when session is missing", async () => {
+      (mockSessionManager.remap as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("Session missing not found"),
+      );
+      const req = makeRequest("/api/sessions/missing/remap", { method: "POST" });
+      const res = await remapPOST(req, { params: Promise.resolve({ id: "missing" }) });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 422 for non-opencode sessions", async () => {
+      (mockSessionManager.remap as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("Session backend-3 is not using the opencode agent"),
+      );
+      const req = makeRequest("/api/sessions/backend-3/remap", { method: "POST" });
+      const res = await remapPOST(req, { params: Promise.resolve({ id: "backend-3" }) });
+      expect(res.status).toBe(422);
+      const data = await res.json();
+      expect(data.error).toMatch(/not using the opencode agent/);
     });
   });
 

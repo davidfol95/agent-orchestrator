@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -28,12 +28,71 @@ let mockAgent: Agent;
 let mockWorkspace: Workspace;
 let mockRegistry: PluginRegistry;
 let config: OrchestratorConfig;
+let originalPath: string | undefined;
 
 function makeHandle(id: string): RuntimeHandle {
   return { id, runtimeName: "mock", data: {} };
 }
 
+function installMockOpencode(
+  sessionListJson: string,
+  deleteLogPath: string,
+  listDelaySeconds = 0,
+): string {
+  const binDir = join(tmpDir, "mock-bin");
+  mkdirSync(binDir, { recursive: true });
+  const scriptPath = join(binDir, "opencode");
+  writeFileSync(
+    scriptPath,
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'if [[ "$1" == "session" && "$2" == "list" ]]; then',
+      listDelaySeconds > 0 ? `  sleep ${listDelaySeconds}` : "",
+      `  printf '%s\n' '${sessionListJson.replace(/'/g, "'\\''")}'`,
+      "  exit 0",
+      "fi",
+      'if [[ "$1" == "session" && "$2" == "delete" ]]; then',
+      `  printf '%s\n' "$*" >> '${deleteLogPath.replace(/'/g, "'\\''")}'`,
+      "  exit 0",
+      "fi",
+      "exit 1",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+  chmodSync(scriptPath, 0o755);
+  return binDir;
+}
+
+function installMockOpencodeWithNotFoundDelete(sessionListJson: string): string {
+  const binDir = join(tmpDir, "mock-bin-not-found");
+  mkdirSync(binDir, { recursive: true });
+  const scriptPath = join(binDir, "opencode");
+  writeFileSync(
+    scriptPath,
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'if [[ "$1" == "session" && "$2" == "list" ]]; then',
+      `  printf '%s\n' '${sessionListJson.replace(/'/g, "'\\''")}'`,
+      "  exit 0",
+      "fi",
+      'if [[ "$1" == "session" && "$2" == "delete" ]]; then',
+      '  printf "Error: Session not found: %s\\n" "$3" >&2',
+      "  exit 1",
+      "fi",
+      "exit 1",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+  chmodSync(scriptPath, 0o755);
+  return binDir;
+}
+
 beforeEach(() => {
+  originalPath = process.env.PATH;
   tmpDir = join(tmpdir(), `ao-test-session-mgr-${randomUUID()}`);
   mkdirSync(tmpDir, { recursive: true });
 
@@ -123,6 +182,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  process.env.PATH = originalPath;
   // Clean up hash-based directories in ~/.agent-orchestrator
   const projectBaseDir = getProjectBaseDir(configPath, join(tmpDir, "my-app"));
   if (existsSync(projectBaseDir)) {
@@ -282,6 +342,248 @@ describe("spawn", () => {
     expect(meta!.status).toBe("spawning");
     expect(meta!.project).toBe("my-app");
     expect(meta!.issue).toBe("INT-42");
+  });
+
+  it("reuses OpenCode session mapping by issue when available", async () => {
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    config = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agent: "opencode",
+        },
+      },
+    };
+
+    writeMetadata(sessionsDir, "app-9", {
+      worktree: "/tmp/old",
+      branch: "feat/INT-42",
+      status: "killed",
+      project: "my-app",
+      issue: "INT-42",
+      agent: "opencode",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      opencodeSessionId: "ses_existing",
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithOpenCode });
+    const session = await sm.spawn({ projectId: "my-app", issueId: "INT-42" });
+
+    expect(opencodeAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectConfig: expect.objectContaining({
+          agentConfig: expect.objectContaining({ opencodeSessionId: "ses_existing" }),
+        }),
+      }),
+    );
+
+    const metadata = readMetadataRaw(sessionsDir, session.id);
+    expect(metadata?.["opencodeSessionId"]).toBe("ses_existing");
+  });
+
+  it("reuses most recent session-id candidate without relying on timestamps", async () => {
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    config = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agent: "opencode",
+        },
+      },
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp/old-no-ts",
+      branch: "feat/INT-42",
+      status: "killed",
+      project: "my-app",
+      issue: "INT-42",
+      agent: "opencode",
+      opencodeSessionId: "ses_invalid_ts",
+    });
+
+    writeMetadata(sessionsDir, "app-2", {
+      worktree: "/tmp/new-with-ts",
+      branch: "feat/INT-42",
+      status: "killed",
+      project: "my-app",
+      issue: "INT-42",
+      agent: "opencode",
+      opencodeSessionId: "ses_valid_newer",
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithOpenCode });
+    const session = await sm.spawn({ projectId: "my-app", issueId: "INT-42" });
+
+    expect(opencodeAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectConfig: expect.objectContaining({
+          agentConfig: expect.objectContaining({ opencodeSessionId: "ses_valid_newer" }),
+        }),
+      }),
+    );
+
+    const metadata = readMetadataRaw(sessionsDir, session.id);
+    expect(metadata?.["opencodeSessionId"]).toBe("ses_valid_newer");
+  });
+
+  it("does not reuse issue mapping when opencodeIssueSessionStrategy is ignore", async () => {
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    config = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agent: "opencode",
+          opencodeIssueSessionStrategy: "ignore",
+        },
+      },
+    };
+
+    writeMetadata(sessionsDir, "app-9", {
+      worktree: "/tmp/old",
+      branch: "feat/INT-42",
+      status: "killed",
+      project: "my-app",
+      issue: "INT-42",
+      agent: "opencode",
+      opencodeSessionId: "ses_existing",
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithOpenCode });
+    const session = await sm.spawn({ projectId: "my-app", issueId: "INT-42" });
+
+    expect(opencodeAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectConfig: expect.objectContaining({
+          agentConfig: expect.not.objectContaining({ opencodeSessionId: expect.any(String) }),
+        }),
+      }),
+    );
+
+    const metadata = readMetadataRaw(sessionsDir, session.id);
+    expect(metadata?.["opencodeSessionId"]).toBeUndefined();
+  });
+
+  it("deletes old issue mappings and starts fresh when opencodeIssueSessionStrategy is delete", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-issue.log");
+    const mockBin = installMockOpencode("[]", deleteLogPath);
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    config = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agent: "opencode",
+          opencodeIssueSessionStrategy: "delete",
+        },
+      },
+    };
+
+    writeMetadata(sessionsDir, "app-8", {
+      worktree: "/tmp/old1",
+      branch: "feat/INT-42",
+      status: "killed",
+      project: "my-app",
+      issue: "INT-42",
+      agent: "opencode",
+      opencodeSessionId: "ses_old_1",
+    });
+    writeMetadata(sessionsDir, "app-9", {
+      worktree: "/tmp/old2",
+      branch: "feat/INT-42",
+      status: "killed",
+      project: "my-app",
+      issue: "INT-42",
+      agent: "opencode",
+      opencodeSessionId: "ses_old_2",
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithOpenCode });
+    const session = await sm.spawn({ projectId: "my-app", issueId: "INT-42" });
+
+    const deleteLog = readFileSync(deleteLogPath, "utf-8");
+    expect(deleteLog).toContain("session delete ses_old_1");
+    expect(deleteLog).toContain("session delete ses_old_2");
+
+    expect(opencodeAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectConfig: expect.objectContaining({
+          agentConfig: expect.not.objectContaining({ opencodeSessionId: expect.any(String) }),
+        }),
+      }),
+    );
+
+    const metadata = readMetadataRaw(sessionsDir, session.id);
+    expect(metadata?.["opencodeSessionId"]).toBeUndefined();
   });
 
   it("throws for unknown project", async () => {
@@ -954,6 +1256,38 @@ describe("get", () => {
     const sm = createSessionManager({ config, registry: mockRegistry });
     expect(await sm.get("nonexistent")).toBeNull();
   });
+
+  it("auto-discovers and persists OpenCode session mapping when missing", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-get-remap.log");
+    const mockBin = installMockOpencode(
+      JSON.stringify([
+        {
+          id: "ses_get_discovered",
+          title: "AO:app-1",
+        },
+      ]),
+      deleteLogPath,
+    );
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const session = await sm.get("app-1");
+
+    expect(session).not.toBeNull();
+    expect(session?.metadata["opencodeSessionId"]).toBe("ses_get_discovered");
+
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta?.["opencodeSessionId"]).toBe("ses_get_discovered");
+  });
 });
 
 describe("kill", () => {
@@ -1055,6 +1389,49 @@ describe("kill", () => {
     // Should not throw even though runtime.destroy fails
     await expect(sm.kill("app-1")).resolves.toBeUndefined();
   });
+
+  it("does not purge mapped OpenCode session on default kill", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-kill-default.log");
+    const mockBin = installMockOpencode("[]", deleteLogPath);
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp/ws",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      opencodeSessionId: "ses_keep",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await sm.kill("app-1");
+
+    expect(existsSync(deleteLogPath)).toBe(false);
+  });
+
+  it("purges mapped OpenCode session when requested", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-kill-purge.log");
+    const mockBin = installMockOpencode("[]", deleteLogPath);
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp/ws",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      opencodeSessionId: "ses_purge",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await sm.kill("app-1", { purgeOpenCode: true });
+
+    const deleteLog = readFileSync(deleteLogPath, "utf-8");
+    expect(deleteLog).toContain("session delete ses_purge");
+  });
 });
 
 describe("cleanup", () => {
@@ -1099,6 +1476,151 @@ describe("cleanup", () => {
 
     expect(result.killed).toContain("app-1");
     expect(result.skipped).toHaveLength(0);
+  });
+
+  it("deletes mapped OpenCode session during cleanup", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete.log");
+    const mockBin = installMockOpencode("[]", deleteLogPath);
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    const mockSCM: SCM = {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("merged"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn(),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn(),
+      getPendingComments: vi.fn(),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn(),
+    };
+
+    const registryWithSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return mockWorkspace;
+        if (slot === "scm") return mockSCM;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "pr_open",
+      project: "my-app",
+      agent: "opencode",
+      opencodeSessionId: "ses_cleanup",
+      pr: "https://github.com/org/repo/pull/10",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithSCM });
+    const result = await sm.cleanup();
+
+    expect(result.killed).toContain("app-1");
+    const deleteLog = readFileSync(deleteLogPath, "utf-8");
+    expect(deleteLog).toContain("session delete ses_cleanup");
+  });
+
+  it("treats missing mapped OpenCode session as already cleaned", async () => {
+    const mockBin = installMockOpencodeWithNotFoundDelete("[]");
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    const mockSCM: SCM = {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("merged"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn(),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn(),
+      getPendingComments: vi.fn(),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn(),
+    };
+
+    const registryWithSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return mockWorkspace;
+        if (slot === "scm") return mockSCM;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "pr_open",
+      project: "my-app",
+      agent: "opencode",
+      opencodeSessionId: "ses_missing",
+      pr: "https://github.com/org/repo/pull/10",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithSCM });
+    const result = await sm.cleanup();
+
+    expect(result.killed).toContain("app-1");
+    expect(result.errors).toEqual([]);
+  });
+
+  it("deletes mapped OpenCode session from archived killed sessions", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-archived.log");
+    const mockBin = installMockOpencode("[]", deleteLogPath);
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-6", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "spawning",
+      project: "my-app",
+      agent: "opencode",
+      opencodeSessionId: "ses_archived",
+      runtimeHandle: JSON.stringify(makeHandle("rt-6")),
+    });
+    deleteMetadata(sessionsDir, "app-6", true);
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const result = await sm.cleanup();
+
+    expect(result.killed).toContain("app-6");
+    const deleteLog = readFileSync(deleteLogPath, "utf-8");
+    expect(deleteLog).toContain("session delete ses_archived");
+  });
+
+  it("does not delete archived OpenCode sessions in cleanup dry-run", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-archived-dry-run.log");
+    const mockBin = installMockOpencode("[]", deleteLogPath);
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-7", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "spawning",
+      project: "my-app",
+      agent: "opencode",
+      opencodeSessionId: "ses_archived_dry_run",
+      runtimeHandle: JSON.stringify(makeHandle("rt-7")),
+    });
+    deleteMetadata(sessionsDir, "app-7", true);
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const result = await sm.cleanup(undefined, { dryRun: true });
+
+    expect(result.killed).toContain("app-7");
+    expect(existsSync(deleteLogPath)).toBe(false);
   });
 
   it("skips sessions without merged PRs or completed issues", async () => {
@@ -1247,6 +1769,167 @@ describe("send", () => {
       "hello",
     );
   });
+
+  it("auto-discovers OpenCode mapping before sending when missing", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-send-remap.log");
+    const mockBin = installMockOpencode(
+      JSON.stringify([
+        {
+          id: "ses_send_discovered",
+          title: "AO:app-1",
+        },
+      ]),
+      deleteLogPath,
+    );
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await sm.send("app-1", "hello");
+
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta?.["opencodeSessionId"]).toBe("ses_send_discovered");
+    expect(mockRuntime.sendMessage).toHaveBeenCalledWith(makeHandle("rt-1"), "hello");
+  });
+});
+
+describe("remap", () => {
+  it("returns persisted OpenCode session id", async () => {
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      opencodeSessionId: "ses_remap",
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const mapped = await sm.remap("app-1");
+
+    expect(mapped).toBe("ses_remap");
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta?.["opencodeSessionId"]).toBe("ses_remap");
+  });
+
+  it("refreshes mapping when force remap is requested", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-force-remap.log");
+    const mockBin = installMockOpencode(
+      JSON.stringify([
+        {
+          id: "ses_fresh",
+          title: "AO:app-1",
+        },
+      ]),
+      deleteLogPath,
+    );
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+      opencodeSessionId: "ses_stale",
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const mapped = await sm.remap("app-1", true);
+
+    expect(mapped).toBe("ses_fresh");
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta?.["opencodeSessionId"]).toBe("ses_fresh");
+  });
+
+  it("uses a longer discovery timeout for explicit remap operations", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-slow-remap.log");
+    const mockBin = installMockOpencode(
+      JSON.stringify([
+        {
+          id: "ses_slow_discovery",
+          title: "AO:app-1",
+        },
+      ]),
+      deleteLogPath,
+      3,
+    );
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const mapped = await sm.remap("app-1", true);
+
+    expect(mapped).toBe("ses_slow_discovery");
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta?.["opencodeSessionId"]).toBe("ses_slow_discovery");
+  });
+
+  it("throws when OpenCode session id mapping is missing", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-missing-remap.log");
+    const mockBin = installMockOpencode("[]", deleteLogPath);
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await expect(sm.remap("app-1")).rejects.toThrow("mapping is missing");
+  });
+
+  it("discovers mapping by AO session title and persists it", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-remap.log");
+    const mockBin = installMockOpencode(
+      JSON.stringify([
+        {
+          id: "ses_discovered",
+          title: "AO:app-1",
+        },
+      ]),
+      deleteLogPath,
+    );
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const mapped = await sm.remap("app-1");
+
+    expect(mapped).toBe("ses_discovered");
+    const meta = readMetadataRaw(sessionsDir, "app-1");
+    expect(meta?.["opencodeSessionId"]).toBe("ses_discovered");
+  });
 });
 
 describe("spawnOrchestrator", () => {
@@ -1276,6 +1959,294 @@ describe("spawnOrchestrator", () => {
     expect(meta!.branch).toBe("main");
     expect(meta!.tmuxName).toBeDefined();
     expect(meta!.runtimeHandle).toBeDefined();
+  });
+
+  it("deletes previous OpenCode orchestrator sessions before starting", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-orchestrator.log");
+    const mockBin = installMockOpencode(
+      JSON.stringify([
+        { id: "ses_old", title: "AO:app-orchestrator", updated: "2025-01-01T00:00:00.000Z" },
+        { id: "ses_new", title: "AO:app-orchestrator", updated: "2025-01-02T00:00:00.000Z" },
+      ]),
+      deleteLogPath,
+    );
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    const configWithOpenCode: OrchestratorConfig = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agent: "opencode",
+        },
+      },
+    };
+
+    const sm = createSessionManager({ config: configWithOpenCode, registry: registryWithOpenCode });
+    await sm.spawnOrchestrator({ projectId: "my-app" });
+
+    const deleteLog = readFileSync(deleteLogPath, "utf-8");
+    expect(deleteLog).toContain("session delete ses_old");
+    expect(deleteLog).toContain("session delete ses_new");
+
+    expect(opencodeAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "app-orchestrator",
+        projectConfig: expect.objectContaining({
+          agentConfig: expect.not.objectContaining({ opencodeSessionId: expect.any(String) }),
+        }),
+      }),
+    );
+
+    const meta = readMetadataRaw(sessionsDir, "app-orchestrator");
+    expect(meta?.["agent"]).toBe("opencode");
+    expect(meta?.["opencodeSessionId"]).toBeUndefined();
+  });
+
+  it("reuses an existing orchestrator session when strategy is reuse", async () => {
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    const configWithReuse: OrchestratorConfig = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agent: "opencode",
+          orchestratorSessionStrategy: "reuse",
+        },
+      },
+    };
+
+    writeMetadata(sessionsDir, "app-orchestrator", {
+      worktree: join(tmpDir, "my-app"),
+      branch: "main",
+      status: "working",
+      role: "orchestrator",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-existing")),
+      opencodeSessionId: "ses_existing",
+      createdAt: new Date().toISOString(),
+    });
+
+    const sm = createSessionManager({ config: configWithReuse, registry: registryWithOpenCode });
+    const session = await sm.spawnOrchestrator({ projectId: "my-app" });
+
+    expect(session.id).toBe("app-orchestrator");
+    expect(mockRuntime.create).not.toHaveBeenCalled();
+    expect(mockRuntime.destroy).not.toHaveBeenCalled();
+  });
+
+  it("reuses mapped OpenCode session id when strategy is reuse and runtime is restarted", async () => {
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    const configWithReuse: OrchestratorConfig = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agent: "opencode",
+          orchestratorSessionStrategy: "reuse",
+        },
+      },
+    };
+
+    writeMetadata(sessionsDir, "app-orchestrator", {
+      worktree: join(tmpDir, "my-app"),
+      branch: "main",
+      status: "working",
+      role: "orchestrator",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-existing")),
+      opencodeSessionId: "ses_existing",
+      createdAt: new Date().toISOString(),
+    });
+
+    vi.mocked(mockRuntime.isAlive).mockResolvedValue(false);
+
+    const sm = createSessionManager({ config: configWithReuse, registry: registryWithOpenCode });
+    await sm.spawnOrchestrator({ projectId: "my-app" });
+
+    expect(opencodeAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectConfig: expect.objectContaining({
+          agentConfig: expect.objectContaining({ opencodeSessionId: "ses_existing" }),
+        }),
+      }),
+    );
+    const meta = readMetadataRaw(sessionsDir, "app-orchestrator");
+    expect(meta?.["opencodeSessionId"]).toBe("ses_existing");
+  });
+
+  it("reuses archived OpenCode mapping for orchestrator when active metadata has no mapping", async () => {
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    const configWithReuse: OrchestratorConfig = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agent: "opencode",
+          orchestratorSessionStrategy: "reuse",
+        },
+      },
+    };
+
+    writeMetadata(sessionsDir, "app-orchestrator", {
+      worktree: join(tmpDir, "my-app"),
+      branch: "main",
+      status: "working",
+      role: "orchestrator",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-existing")),
+      opencodeSessionId: "ses_existing",
+      createdAt: new Date().toISOString(),
+    });
+    deleteMetadata(sessionsDir, "app-orchestrator", true);
+    writeMetadata(sessionsDir, "app-orchestrator", {
+      worktree: join(tmpDir, "my-app"),
+      branch: "main",
+      status: "working",
+      role: "orchestrator",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-existing")),
+      createdAt: new Date().toISOString(),
+    });
+
+    vi.mocked(mockRuntime.isAlive).mockResolvedValue(false);
+
+    const sm = createSessionManager({ config: configWithReuse, registry: registryWithOpenCode });
+    await sm.spawnOrchestrator({ projectId: "my-app" });
+
+    expect(opencodeAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectConfig: expect.objectContaining({
+          agentConfig: expect.objectContaining({ opencodeSessionId: "ses_existing" }),
+        }),
+      }),
+    );
+  });
+
+  it("starts fresh without deleting prior OpenCode sessions when strategy is ignore", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-ignore.log");
+    const mockBin = installMockOpencode(
+      JSON.stringify([
+        { id: "ses_old", title: "AO:app-orchestrator", updated: "2025-01-01T00:00:00.000Z" },
+      ]),
+      deleteLogPath,
+    );
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    const opencodeAgent: Agent = {
+      ...mockAgent,
+      name: "opencode",
+    };
+    const registryWithOpenCode: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return opencodeAgent;
+        if (slot === "workspace") return mockWorkspace;
+        return null;
+      }),
+    };
+
+    const configWithIgnoreNew: OrchestratorConfig = {
+      ...config,
+      defaults: { ...config.defaults, agent: "opencode" },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agent: "opencode",
+          orchestratorSessionStrategy: "ignore",
+        },
+      },
+    };
+
+    writeMetadata(sessionsDir, "app-orchestrator", {
+      worktree: join(tmpDir, "my-app"),
+      branch: "main",
+      status: "working",
+      role: "orchestrator",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-existing")),
+      createdAt: new Date().toISOString(),
+    });
+
+    vi.mocked(mockRuntime.isAlive).mockResolvedValueOnce(true);
+
+    const sm = createSessionManager({
+      config: configWithIgnoreNew,
+      registry: registryWithOpenCode,
+    });
+    await sm.spawnOrchestrator({ projectId: "my-app" });
+
+    expect(mockRuntime.destroy).toHaveBeenCalledWith(makeHandle("rt-existing"));
+    expect(mockRuntime.create).toHaveBeenCalled();
+    expect(existsSync(deleteLogPath)).toBe(false);
   });
 
   it("skips workspace creation", async () => {
@@ -1320,6 +2291,32 @@ describe("spawnOrchestrator", () => {
         workspacePath: join(tmpDir, "my-app"),
         launchCommand: "mock-agent --start",
       }),
+    );
+  });
+
+  it("uses orchestratorModel when configured", async () => {
+    const configWithOrchestratorModel: OrchestratorConfig = {
+      ...config,
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agentConfig: {
+            model: "worker-model",
+            orchestratorModel: "orchestrator-model",
+          },
+        },
+      },
+    };
+
+    const sm = createSessionManager({
+      config: configWithOrchestratorModel,
+      registry: mockRegistry,
+    });
+    await sm.spawnOrchestrator({ projectId: "my-app" });
+
+    expect(mockAgent.getLaunchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "orchestrator-model" }),
     );
   });
 
@@ -1621,6 +2618,29 @@ describe("restore", () => {
   it("throws for nonexistent session (not in active or archive)", async () => {
     const sm = createSessionManager({ config, registry: mockRegistry });
     await expect(sm.restore("nonexistent")).rejects.toThrow("not found");
+  });
+
+  it("does not recreate active metadata when archive restore fails validation", async () => {
+    const wsPath = join(tmpDir, "ws-app-1");
+    mkdirSync(wsPath, { recursive: true });
+    const deleteLogPath = join(tmpDir, "opencode-restore-validation.log");
+    const mockBin = installMockOpencode("[]", deleteLogPath);
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: wsPath,
+      branch: "feat/TEST-1",
+      status: "killed",
+      project: "my-app",
+      agent: "opencode",
+      runtimeHandle: JSON.stringify(makeHandle("rt-old")),
+    });
+    deleteMetadata(sessionsDir, "app-1");
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await expect(sm.restore("app-1")).rejects.toThrow(SessionNotRestorableError);
+
+    expect(readMetadataRaw(sessionsDir, "app-1")).toBeNull();
   });
 
   it("uses getRestoreCommand when available", async () => {

@@ -55,6 +55,8 @@ const AgentSpecificConfigSchema = z
   .object({
     permissions: z.enum(["skip", "default"]).default("skip"),
     model: z.string().optional(),
+    orchestratorModel: z.string().optional(),
+    opencodeSessionId: z.string().optional(),
   })
   .passthrough();
 
@@ -79,6 +81,10 @@ const ProjectConfigSchema = z.object({
   agentRules: z.string().optional(),
   agentRulesFile: z.string().optional(),
   orchestratorRules: z.string().optional(),
+  orchestratorSessionStrategy: z
+    .enum(["reuse", "delete", "ignore", "delete-new", "ignore-new", "kill-previous"])
+    .optional(),
+  opencodeIssueSessionStrategy: z.enum(["reuse", "delete", "ignore"]).optional(),
 });
 
 const DefaultPluginsSchema = z.object({
