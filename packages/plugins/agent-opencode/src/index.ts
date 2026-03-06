@@ -20,13 +20,27 @@ interface OpenCodeSessionListEntry {
   updated?: string;
 }
 
+const OPENCODE_SESSION_ID_RE = /^ses_[A-Za-z0-9_-]+$/;
+
+function asValidOpenCodeSessionId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  return OPENCODE_SESSION_ID_RE.test(trimmed) ? trimmed : undefined;
+}
+
 function parseSessionList(raw: string): OpenCodeSessionListEntry[] {
-  const parsed: unknown = JSON.parse(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
   if (!Array.isArray(parsed)) return [];
   return parsed.filter((item): item is OpenCodeSessionListEntry => {
     if (!item || typeof item !== "object") return false;
     const record = item as Record<string, unknown>;
-    return typeof record["id"] === "string";
+    return asValidOpenCodeSessionId(record["id"]) !== undefined;
   });
 }
 
@@ -99,7 +113,7 @@ function createOpenCodeAgent(): Agent {
         const runCommand = promptValue
           ? ["opencode", "run", ...runOptions, promptValue].join(" ")
           : ["opencode", "run", ...runOptions, "--command", "true"].join(" ");
-        const continueSession = `"$(opencode session list --format json | node -e ${shellEscape("let input='';process.stdin.on('data',c=>input+=c).on('end',()=>{const title=process.argv[1];const rows=JSON.parse(input);if(!Array.isArray(rows))process.exit(1);const matches=rows.filter((r)=>r&&r.title===title&&typeof r.id==='string');if(matches.length===0)process.exit(1);process.stdout.write(matches[0].id);});")} ${shellEscape(`AO:${config.sessionId}`)})"`;
+        const continueSession = `"$(opencode session list --format json | node -e ${shellEscape("let input='';process.stdin.on('data',c=>input+=c).on('end',()=>{const title=process.argv[1];const rows=JSON.parse(input);if(!Array.isArray(rows))process.exit(1);const matches=rows.filter((r)=>r&&r.title===title&&typeof r.id==='string').sort((a,b)=>{const aUpdated=Date.parse(typeof a.updated==='string'?a.updated:'');const bUpdated=Date.parse(typeof b.updated==='string'?b.updated:'');const aScore=Number.isNaN(aUpdated)?0:aUpdated;const bScore=Number.isNaN(bUpdated)?0:bUpdated;return bScore-aScore;});if(matches.length===0)process.exit(1);process.stdout.write(matches[0].id);});")} ${shellEscape(`AO:${config.sessionId}`)})"`;
         const continueCommand = ["opencode", "--session", continueSession, ...sharedOptions].join(
           " ",
         );

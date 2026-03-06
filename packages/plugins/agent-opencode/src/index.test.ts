@@ -485,6 +485,33 @@ describe("detectActivity", () => {
   });
 });
 
+describe("getActivityState", () => {
+  const agent = create();
+
+  it("returns null when opencode session list output is malformed JSON", async () => {
+    mockExecFileAsync.mockImplementation((cmd: string) => {
+      if (cmd === "tmux") return Promise.resolve({ stdout: "/dev/ttys003\n", stderr: "" });
+      if (cmd === "ps") {
+        return Promise.resolve({
+          stdout: "  PID TT       ARGS\n  789 ttys003  opencode\n",
+          stderr: "",
+        });
+      }
+      if (cmd === "opencode") return Promise.resolve({ stdout: "not json", stderr: "" });
+      return Promise.reject(new Error("unexpected"));
+    });
+
+    const state = await agent.getActivityState(
+      makeSession({
+        runtimeHandle: makeTmuxHandle(),
+        metadata: { opencodeSessionId: "ses_abc123" },
+      }),
+    );
+
+    expect(state).toBeNull();
+  });
+});
+
 // =========================================================================
 // getSessionInfo
 // =========================================================================

@@ -1450,6 +1450,27 @@ describe("kill", () => {
     const deleteLog = readFileSync(deleteLogPath, "utf-8");
     expect(deleteLog).toContain("session delete ses_purge");
   });
+
+  it("skips purge when mapped OpenCode session id is invalid", async () => {
+    const deleteLogPath = join(tmpDir, "opencode-delete-kill-invalid.log");
+    const mockBin = installMockOpencode("[]", deleteLogPath);
+    process.env.PATH = `${mockBin}:${originalPath ?? ""}`;
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp/ws",
+      branch: "main",
+      status: "working",
+      project: "my-app",
+      agent: "opencode",
+      opencodeSessionId: "ses bad id",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await sm.kill("app-1", { purgeOpenCode: true });
+
+    expect(existsSync(deleteLogPath)).toBe(false);
+  });
 });
 
 describe("cleanup", () => {

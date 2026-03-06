@@ -64,6 +64,14 @@ import {
 const execFileAsync = promisify(execFile);
 const OPENCODE_DISCOVERY_TIMEOUT_MS = 2_000;
 const OPENCODE_INTERACTIVE_DISCOVERY_TIMEOUT_MS = 10_000;
+const OPENCODE_SESSION_ID_RE = /^ses_[A-Za-z0-9_-]+$/;
+
+function asValidOpenCodeSessionId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  return OPENCODE_SESSION_ID_RE.test(trimmed) ? trimmed : undefined;
+}
 
 function errorIncludesSessionNotFound(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -73,6 +81,8 @@ function errorIncludesSessionNotFound(err: unknown): boolean {
 }
 
 async function deleteOpenCodeSession(sessionId: string): Promise<void> {
+  const validatedSessionId = asValidOpenCodeSessionId(sessionId);
+  if (!validatedSessionId) return;
   const retryDelaysMs = [0, 200, 600];
   let lastError: unknown;
   for (const delayMs of retryDelaysMs) {
@@ -80,7 +90,9 @@ async function deleteOpenCodeSession(sessionId: string): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
     try {
-      await execFileAsync("opencode", ["session", "delete", sessionId], { timeout: 30_000 });
+      await execFileAsync("opencode", ["session", "delete", validatedSessionId], {
+        timeout: 30_000,
+      });
       return;
     } catch (err) {
       if (errorIncludesSessionNotFound(err)) {
@@ -118,8 +130,8 @@ async function discoverOpenCodeSessionIdsByTitle(
       });
 
     return candidates
-      .map((entry) => entry["id"])
-      .filter((id): id is string => typeof id === "string" && id.length > 0);
+      .map((entry) => asValidOpenCodeSessionId(entry["id"]))
+      .filter((id): id is string => typeof id === "string");
   } catch {
     return [];
   }
@@ -377,8 +389,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     const ids: string[] = [];
     const maybeAdd = (id: string, raw: Record<string, string> | null) => {
       if (!matchesCriteria(id, raw)) return;
-      const mapped = raw?.["opencodeSessionId"];
-      if (typeof mapped !== "string" || mapped.length === 0) return;
+      const mapped = asValidOpenCodeSessionId(raw?.["opencodeSessionId"]);
+      if (!mapped) return;
       ids.push(mapped);
     };
 
