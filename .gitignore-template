@@ -1,0 +1,11 @@
+# Agent configuration and tracking (personal, not for repo)
+# Add these to .gitignore for ALL projects with agent configs
+
+CLAUDE.md
+AGENTS.md
+IMPROVEMENTS.md
+DASHBOARD-PROPOSAL.md
+PROJECT-CONFIG.md
+
+# Any other project-specific agent tracking files
+*-TRACKING.md

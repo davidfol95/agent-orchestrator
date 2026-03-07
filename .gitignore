@@ -58,3 +58,10 @@ packages/web/agent-orchestrator.yaml
 
 # Local agent orchestrator config (may contain secrets)
 agent-orchestrator.yaml
+
+# Agent configuration and tracking (personal, not for repo)
+CLAUDE.md
+AGENTS.md
+IMPROVEMENTS.md
+DASHBOARD-PROPOSAL.md
+PROJECT-CONFIG.md
