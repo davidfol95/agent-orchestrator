@@ -1839,26 +1839,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       }
     }
 
-    // If restored from archive, recreate the active metadata file
-    if (fromArchive) {
-      writeMetadata(sessionsDir, sessionId, {
-        worktree: raw["worktree"] ?? "",
-        branch: raw["branch"] ?? "",
-        status: raw["status"] ?? "killed",
-        role: raw["role"],
-        tmuxName: raw["tmuxName"],
-        issue: raw["issue"],
-        pr: raw["pr"],
-        prAutoDetect:
-          raw["prAutoDetect"] === "off" ? "off" : raw["prAutoDetect"] === "on" ? "on" : undefined,
-        summary: raw["summary"],
-        project: raw["project"],
-        createdAt: raw["createdAt"],
-        runtimeHandle: raw["runtimeHandle"],
-        opencodeSessionId: raw["opencodeSessionId"],
-      });
-    }
-
     // 2. Reconstruct Session from metadata and enrich with live runtime state.
     //    metadataToSession sets activity: null, so without enrichment a crashed
     //    session (status "working", agent exited) would not be detected as terminal
@@ -1884,6 +1864,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         tmuxName: raw["tmuxName"],
         issue: raw["issue"],
         pr: raw["pr"],
+        prAutoDetect:
+          raw["prAutoDetect"] === "off" ? "off" : raw["prAutoDetect"] === "on" ? "on" : undefined,
         summary: raw["summary"],
         project: raw["project"],
         agent: raw["agent"],
