@@ -1099,60 +1099,55 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
   async function list(projectId?: string): Promise<Session[]> {
     const allSessions = listAllSessions(projectId);
+    const results: Session[] = [];
 
-    const sessionPromises = allSessions.map(
-      async ({ sessionName, projectId: sessionProjectId }) => {
-        const project = config.projects[sessionProjectId];
-        if (!project) return null;
+    for (const { sessionName, projectId: sessionProjectId } of allSessions) {
+      const project = config.projects[sessionProjectId];
+      if (!project) continue;
 
-        const sessionsDir = getProjectSessionsDir(project);
-        const raw = readMetadataRaw(sessionsDir, sessionName);
-        if (!raw) return null;
+      const sessionsDir = getProjectSessionsDir(project);
+      const raw = readMetadataRaw(sessionsDir, sessionName);
+      if (!raw) continue;
 
-        // Get file timestamps for createdAt/lastActivityAt
-        let createdAt: Date | undefined;
-        let modifiedAt: Date | undefined;
-        try {
-          const metaPath = join(sessionsDir, sessionName);
-          const stats = statSync(metaPath);
-          createdAt = stats.birthtime;
-          modifiedAt = stats.mtime;
-        } catch {
-          // If stat fails, timestamps will fall back to current time
+      let createdAt: Date | undefined;
+      let modifiedAt: Date | undefined;
+      try {
+        const metaPath = join(sessionsDir, sessionName);
+        const stats = statSync(metaPath);
+        createdAt = stats.birthtime;
+        modifiedAt = stats.mtime;
+      } catch {
+        // If stat fails, timestamps will fall back to current time
+      }
+
+      const session = metadataToSession(sessionName, raw, createdAt, modifiedAt);
+      const selectedAgentName = raw["agent"];
+      const plugins = resolvePlugins(project, selectedAgentName);
+
+      let enrichTimeoutId: ReturnType<typeof setTimeout> | null = null;
+      const enrichTimeout = new Promise<void>((resolve) => {
+        enrichTimeoutId = setTimeout(resolve, 2_000);
+      });
+      const enrichPromise = ensureHandleAndEnrich(
+        session,
+        sessionName,
+        sessionsDir,
+        project,
+        selectedAgentName,
+        plugins,
+      ).catch(() => {});
+      try {
+        await Promise.race([enrichPromise, enrichTimeout]);
+      } finally {
+        if (enrichTimeoutId) {
+          clearTimeout(enrichTimeoutId);
         }
+      }
 
-        const session = metadataToSession(sessionName, raw, createdAt, modifiedAt);
+      results.push(session);
+    }
 
-        const selectedAgentName = raw["agent"];
-        const plugins = resolvePlugins(project, selectedAgentName);
-        // Cap per-session enrichment at 2s — subprocess calls (tmux/ps) can be
-        // slow under load. If we time out, session keeps its metadata values.
-        let enrichTimeoutId: ReturnType<typeof setTimeout> | null = null;
-        const enrichTimeout = new Promise<void>((resolve) => {
-          enrichTimeoutId = setTimeout(resolve, 2_000);
-        });
-        const enrichPromise = ensureHandleAndEnrich(
-          session,
-          sessionName,
-          sessionsDir,
-          project,
-          selectedAgentName,
-          plugins,
-        ).catch(() => {});
-        try {
-          await Promise.race([enrichPromise, enrichTimeout]);
-        } finally {
-          if (enrichTimeoutId) {
-            clearTimeout(enrichTimeoutId);
-          }
-        }
-
-        return session;
-      },
-    );
-
-    const results = await Promise.all(sessionPromises);
-    return results.filter((s): s is Session => s !== null);
+    return results;
   }
 
   async function get(sessionId: SessionId): Promise<Session | null> {
@@ -1748,22 +1743,24 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
   async function remap(sessionId: SessionId, force = false): Promise<string> {
     let raw: Record<string, string> | null = null;
     let sessionsDir: string | null = null;
+    let project: ProjectConfig | null = null;
 
-    for (const project of Object.values(config.projects)) {
-      const dir = getProjectSessionsDir(project);
+    for (const candidateProject of Object.values(config.projects)) {
+      const dir = getProjectSessionsDir(candidateProject);
       const metadata = readMetadataRaw(dir, sessionId);
       if (metadata) {
         raw = metadata;
         sessionsDir = dir;
+        project = candidateProject;
         break;
       }
     }
 
-    if (!raw || !sessionsDir) {
+    if (!raw || !sessionsDir || !project) {
       throw new Error(`Session ${sessionId} not found`);
     }
 
-    const selectedAgent = raw["agent"] ?? config.defaults.agent;
+    const selectedAgent = raw["agent"] ?? project.agent ?? config.defaults.agent;
     if (selectedAgent !== "opencode") {
       throw new Error(`Session ${sessionId} is not using the opencode agent`);
     }

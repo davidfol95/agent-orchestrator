@@ -72,7 +72,7 @@ vi.mock("@composio/ao-core", async (importOriginal) => {
     ((strategy: string | undefined) => {
       if (strategy === "kill-previous" || strategy === "delete-new") return "delete";
       if (strategy === "ignore-new") return "ignore";
-      return strategy ?? "delete";
+      return strategy ?? "reuse";
     });
 
   return {

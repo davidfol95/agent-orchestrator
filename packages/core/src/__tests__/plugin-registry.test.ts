@@ -164,6 +164,33 @@ describe("loadBuiltins", () => {
     expect(registry.get("agent", "claude-code")).not.toBeNull();
     expect(registry.get("agent", "opencode")).not.toBeNull();
   });
+
+  it("passes configured notifier plugin config to create()", async () => {
+    const registry = createPluginRegistry();
+    const fakeWebhookNotifier = makePlugin("notifier", "webhook");
+    const config = makeOrchestratorConfig({
+      notifiers: {
+        webhook: {
+          plugin: "webhook",
+          url: "http://127.0.0.1:8787/hook",
+          retries: 2,
+          retryDelayMs: 500,
+        },
+      },
+    });
+
+    await registry.loadBuiltins(config, async (pkg: string) => {
+      if (pkg === "@composio/ao-plugin-notifier-webhook") return fakeWebhookNotifier;
+      throw new Error(`Not found: ${pkg}`);
+    });
+
+    expect(fakeWebhookNotifier.create).toHaveBeenCalledWith({
+      plugin: "webhook",
+      url: "http://127.0.0.1:8787/hook",
+      retries: 2,
+      retryDelayMs: 500,
+    });
+  });
 });
 
 describe("extractPluginConfig (via register with config)", () => {
