@@ -493,6 +493,9 @@ importers:
       '@composio/ao-plugin-agent-claude-code':
         specifier: workspace:*
         version: link:../plugins/agent-claude-code
+      '@composio/ao-plugin-agent-opencode':
+        specifier: workspace:*
+        version: link:../plugins/agent-opencode
       '@composio/ao-plugin-runtime-tmux':
         specifier: workspace:*
         version: link:../plugins/runtime-tmux
