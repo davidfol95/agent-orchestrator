@@ -263,7 +263,7 @@ async function runStartup(
     orchestrator?: boolean;
     rebuild?: boolean;
     autoPort?: boolean;
-    skipRecovery?: boolean;
+    recovery?: boolean;
   },
 ): Promise<void> {
   const sessionId = `${project.sessionPrefix}-orchestrator`;
@@ -280,7 +280,9 @@ async function runStartup(
   let dashboardProcess: ChildProcess | null = null;
   let reused = false;
 
-  if (opts?.skipRecovery !== true) {
+  // Run recovery only when explicitly requested (--recovery flag)
+  // AC4 (WebSocket reconnection) and AC5 (integration test) are not yet complete
+  if (opts?.recovery === true) {
     try {
       spinner.start("Running session recovery");
       const registry = await getPluginRegistry(config);
@@ -474,6 +476,7 @@ export function registerStart(program: Command): void {
     .option("--no-dashboard", "Skip starting the dashboard server")
     .option("--no-orchestrator", "Skip starting the orchestrator agent")
     .option("--rebuild", "Clean and rebuild dashboard before starting")
+    .option("--recovery", "Run session recovery on startup (experimental)")
     .action(
       async (
         projectArg?: string,
@@ -481,6 +484,7 @@ export function registerStart(program: Command): void {
           dashboard?: boolean;
           orchestrator?: boolean;
           rebuild?: boolean;
+          recovery?: boolean;
         },
       ) => {
         try {
