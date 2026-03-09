@@ -374,6 +374,22 @@ describe("session kill", () => {
 
     expect(mockSessionManager.kill).toHaveBeenCalledWith("app-1", { purgeOpenCode: true });
   });
+
+  it("passes keep-session flag to prevent OpenCode purge", async () => {
+    mockSessionManager.kill.mockResolvedValue(undefined);
+
+    await program.parseAsync(["node", "test", "session", "kill", "app-1", "--keep-session"]);
+
+    expect(mockSessionManager.kill).toHaveBeenCalledWith("app-1", { purgeOpenCode: false });
+  });
+
+  it("defaults to purge OpenCode session when neither flag is set", async () => {
+    mockSessionManager.kill.mockResolvedValue(undefined);
+
+    await program.parseAsync(["node", "test", "session", "kill", "app-1"]);
+
+    expect(mockSessionManager.kill).toHaveBeenCalledWith("app-1", { purgeOpenCode: true });
+  });
 });
 
 describe("session attach", () => {
