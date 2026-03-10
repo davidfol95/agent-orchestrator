@@ -256,3 +256,55 @@ The PR set delivers solid foundational slices for the decentralized self-improvi
 Two PRs (#403, #396) have concrete CI-blocking lint failures and correctness/safety issues that must be fixed before merge. The remaining three code PRs are clean and ready to merge.
 
 The article title's "democratically" claim should be tempered to match shipped capability (policy-governed contribution, not voting/consensus). Consider: _"The Decentralized Self-Improving AI System That Evolves Through Distributed Contribution"_.
+
+---
+
+## Appendix: Deep Verification Pass (2026-03-10, post-initial-review)
+
+Independent code-level verification performed after initial verdicts. No fix commits have landed on #403 or #396 since initial review. Blockers remain open.
+
+### PR #403 — Detailed Verification
+
+| # | Check | Verdict | Evidence |
+|---|---|---|---|
+| 1 | Lint blocker (`no-useless-assignment`) | **FAIL** | `feedback-tools.ts:216` — catch block reassigns `isFile = false` which is already the initializer value on line 212. Triggered by `eslint.configs.recommended` in ESLint v9. |
+| 2 | Dedupe key sort/lower ordering | **FAIL** | `feedback-tools.ts:84` sorts evidence before line 92 lowercases it. `["Zebra","apple"]` and `["zebra","apple"]` produce different sort orders, breaking case-insensitive dedupe. |
+| 3 | Schema validation completeness | **PASS** | All 6 fields validated: title/body/session/source via `NonEmptyTextSchema`, evidence via `z.array().min(1)`, confidence via `z.number().finite().min(0).max(1)`. Schema is `.strict()`. |
+| 4 | Atomic write safety | **PASS** | `atomicWriteFileSync` writes to `${path}.tmp.${pid}.${Date.now()}` then `renameSync` — correct POSIX atomic pattern. |
+| 5 | Test covers case-sensitivity | **FAIL** | Existing test passes coincidentally — both inputs go through same buggy code path. No test verifies that `"VIDEO CAPTURE"` and `"video capture"` dedupe identically. |
+| 6 | Export surface | **PASS** | All internal helpers (`normalizeText`, `serializeReport`, `parseMetadataFile`, etc.) are correctly unexported. Public API surface is intentional. |
+
+### PR #396 — Detailed Verification
+
+| # | Check | Verdict | Evidence |
+|---|---|---|---|
+| 1 | Lint blocker: duplicate imports | **CONDITIONAL** | `commands.ts:1-2` and `health.ts:1-2` use split `import type` + `import` from same module. Semantically correct but may trip `import/no-duplicates` rule. Needs merge to `import { createAoCliRunner, type AoCliRunner }` form. |
+| 2 | Unhandled async rejection | **FAIL** | `health.ts:132,134` — `void this.pollOnce()` in `setInterval`/`start()`. `noise-control.ts:124` — `void this.flushAndNotify()` in `setTimeout`. Both discard promises without `.catch()`. If `onSummary`/`onBatchReady` throws, Node.js crashes on unhandled rejection. |
+| 3 | Session classification duplication | **FAIL** | `summarizeSessions()` in `commands.ts:67-91` and `classify()` in `health.ts:52-75` contain identical active/degraded/dead bucketing logic. Only difference: `classify` adds stale detection. Should share a common helper. |
+| 4 | Command parsing safety | **PASS** | `parseAoAutoReplyCommand` uses exact-match whitelist (`"sessions"`, `"status"`, `"retry"`, `"kill"`). `execFile` in `ao-cli.ts` does not invoke shell — immune to injection via sessionId. |
+| 5 | Noise control correctness | **PASS** | Debounce map + burst detection + timer cleanup is correct. `flushBatch` always calls `clearTimeout`. Minor: `debouncedAt` map grows unboundedly (slow leak in long-running processes). |
+| 6 | Test coverage | **PARTIAL** | Missing: `/ao kill` execution path, invalid JSON error path, `parseAgeToMinutes` edge cases, `pollOnce` re-entrance guard, dedicated noise-control unit tests. |
+
+### PR #402 — Sanity Verification
+
+| # | Check | Verdict | Evidence |
+|---|---|---|---|
+| 1 | `parseLeftRightCounts` edge cases | **PASS** | Regex `^\d+\s+\d+$` rejects empty/non-numeric/negative. `normalizePositiveCount` provides defense-in-depth. |
+| 2 | SCM interface non-breaking | **PASS** | All three ForkSync methods use `?` optional marker. |
+| 3 | Test mock sequences | **PASS** | All 4 scenarios (up-to-date, ff, diverged, blocked) mock the exact git command call order. |
+| 4 | No hardcoded secrets/paths | **PASS** | Only `/tmp/repo` in test fixtures. |
+
+### PR #374 — Sanity Verification
+
+| # | Check | Verdict | Evidence |
+|---|---|---|---|
+| 1 | Core adaptive delay bounded | **FAIL (advisory)** | `tmux.ts`: `1000 + (len/1000)*500` — unbounded. 100KB message = 51s delay. Runtime-tmux has `Math.min(15_000, ...)` cap but core does not. |
+| 2 | Runtime `waitForPasteToSettle` cap | **PASS** | `Math.min(15_000, ...)` — hard cap at 15 seconds. |
+| 3 | Retry loops bounded | **PASS** | `as const` tuples: core 3 retries, runtime 4 retries. Settle loop time-capped at 15s. |
+| 4 | Race conditions | **PASS** | Sequential capture/compare. `stableCount >= 2` mitigates transient rendering. Retry loop covers TOCTOU gap. |
+
+### Verification Conclusion
+
+All original blocker findings confirmed. No false positives. Two additional findings surfaced:
+- **#396**: Session classification duplication (P1 — should extract shared helper)
+- **#396**: `debouncedAt` map unbounded growth (P2 — slow leak in long-running processes)
