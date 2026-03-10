@@ -3597,37 +3597,6 @@ describe("claimPR", () => {
     expect(raw!["prAutoDetect"]).toBeUndefined();
   });
 
-  it("supports takeover by disabling PR auto-detect on the previous session", async () => {
-    const mockSCM = makeSCM();
-
-    writeMetadata(sessionsDir, "app-1", {
-      worktree: "/tmp/ws-app-1",
-      branch: "feat/existing-pr",
-      status: "review_pending",
-      project: "my-app",
-      pr: "https://github.com/org/my-app/pull/42",
-      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
-    });
-
-    writeMetadata(sessionsDir, "app-2", {
-      worktree: "/tmp/ws-app-2",
-      branch: "feat/other-work",
-      status: "working",
-      project: "my-app",
-      runtimeHandle: JSON.stringify(makeHandle("rt-2")),
-    });
-
-    const sm = createSessionManager({ config, registry: registryWithSCM(mockSCM) });
-    const result = await sm.claimPR("app-2", "42", { takeover: true });
-
-    expect(result.takenOverFrom).toEqual(["app-1"]);
-
-    const previous = readMetadataRaw(sessionsDir, "app-1");
-    expect(previous!["pr"]).toBeUndefined();
-    expect(previous!["prAutoDetect"]).toBe("off");
-    expect(previous!["status"]).toBe("working");
-  });
-
   it("automatically consolidates ownership when another session tracks the PR", async () => {
     const mockSCM = makeSCM();
 
