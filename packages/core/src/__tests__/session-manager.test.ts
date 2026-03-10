@@ -3655,6 +3655,157 @@ describe("claimPR", () => {
     expect(raw!["pr"]).toBe("https://github.com/org/my-app/pull/42");
     expect(raw!["status"]).toBe("pr_open");
   });
+
+  // RULE B: One session may own multiple PRs sequentially (switching ownership)
+  it("allows same session to claim different PRs sequentially without rejection", async () => {
+    const mockSCM = makeSCM({
+      resolvePR: vi
+        .fn()
+        .mockResolvedValueOnce({
+          number: 42,
+          url: "https://github.com/org/my-app/pull/42",
+          title: "First PR",
+          owner: "org",
+          repo: "my-app",
+          branch: "feat/first-pr",
+          baseBranch: "main",
+          isDraft: false,
+        })
+        .mockResolvedValueOnce({
+          number: 99,
+          url: "https://github.com/org/my-app/pull/99",
+          title: "Second PR",
+          owner: "org",
+          repo: "my-app",
+          branch: "feat/second-pr",
+          baseBranch: "main",
+          isDraft: false,
+        }),
+      checkoutPR: vi.fn().mockResolvedValue(true),
+    });
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp/ws-app-1",
+      branch: "feat/initial",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithSCM(mockSCM) });
+
+    // Claim first PR
+    const result1 = await sm.claimPR("app-1", "42");
+    expect(result1.pr.number).toBe(42);
+    expect(result1.takenOverFrom).toEqual([]);
+
+    let raw = readMetadataRaw(sessionsDir, "app-1");
+    expect(raw!["pr"]).toBe("https://github.com/org/my-app/pull/42");
+
+    // Claim second PR (switches ownership, no rejection)
+    const result2 = await sm.claimPR("app-1", "99");
+    expect(result2.pr.number).toBe(99);
+    expect(result2.takenOverFrom).toEqual([]);
+
+    raw = readMetadataRaw(sessionsDir, "app-1");
+    expect(raw!["pr"]).toBe("https://github.com/org/my-app/pull/99");
+    expect(raw!["branch"]).toBe("feat/second-pr");
+  });
+
+  // Idempotent re-claim by same owner
+  it("handles idempotent re-claim of same PR by same session", async () => {
+    const mockSCM = makeSCM();
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp/ws-app-1",
+      branch: "feat/existing-pr",
+      status: "pr_open",
+      project: "my-app",
+      pr: "https://github.com/org/my-app/pull/42",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithSCM(mockSCM) });
+
+    // Re-claim same PR - should succeed without consolidation
+    const result = await sm.claimPR("app-1", "42");
+    expect(result.pr.number).toBe(42);
+    expect(result.takenOverFrom).toEqual([]);
+
+    const raw = readMetadataRaw(sessionsDir, "app-1");
+    expect(raw!["pr"]).toBe("https://github.com/org/my-app/pull/42");
+  });
+
+  // Stale/dead prior owner handoff
+  it("consolidates from stale/dead prior owner regardless of status", async () => {
+    const mockSCM = makeSCM();
+
+    // Prior owner in "spawning" state (stuck/dead)
+    writeMetadata(sessionsDir, "app-stale", {
+      worktree: "/tmp/ws-app-stale",
+      branch: "feat/existing-pr",
+      status: "spawning", // Stuck in spawning
+      project: "my-app",
+      pr: "https://github.com/org/my-app/pull/42",
+      runtimeHandle: JSON.stringify(makeHandle("rt-stale")),
+    });
+
+    writeMetadata(sessionsDir, "app-2", {
+      worktree: "/tmp/ws-app-2",
+      branch: "feat/other",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-2")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithSCM(mockSCM) });
+    const result = await sm.claimPR("app-2", "42");
+
+    // Consolidation happens regardless of prior owner's status
+    expect(result.takenOverFrom).toContain("app-stale");
+    expect(result.pr.number).toBe(42);
+
+    // Prior owner is displaced
+    const staleRaw = readMetadataRaw(sessionsDir, "app-stale");
+    expect(staleRaw!["pr"] ?? "").toBe("");
+    expect(staleRaw!["status"]).toBe("spawning"); // Status unchanged (not a PR-tracking status)
+  });
+
+  // RULE A: Exclusive PR->agent mapping - explicit test
+  it("ensures exclusive PR ownership (only one active owner per PR)", async () => {
+    const mockSCM = makeSCM();
+
+    // First session owns the PR
+    writeMetadata(sessionsDir, "app-owner", {
+      worktree: "/tmp/ws-owner",
+      branch: "feat/existing-pr",
+      status: "pr_open",
+      project: "my-app",
+      pr: "https://github.com/org/my-app/pull/42",
+      runtimeHandle: JSON.stringify(makeHandle("rt-owner")),
+    });
+
+    // Second session wants to claim the same PR
+    writeMetadata(sessionsDir, "app-new", {
+      worktree: "/tmp/ws-new",
+      branch: "feat/other",
+      status: "working",
+      project: "my-app",
+      runtimeHandle: JSON.stringify(makeHandle("rt-new")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithSCM(mockSCM) });
+    const result = await sm.claimPR("app-new", "42");
+
+    // New owner succeeds, old owner is displaced
+    expect(result.takenOverFrom).toEqual(["app-owner"]);
+
+    const newOwner = readMetadataRaw(sessionsDir, "app-new");
+    expect(newOwner!["pr"]).toBe("https://github.com/org/my-app/pull/42");
+
+    const oldOwner = readMetadataRaw(sessionsDir, "app-owner");
+    expect(oldOwner!["pr"] ?? "").toBe("");
+  });
 });
 
 describe("PluginRegistry.loadBuiltins importFn", () => {
