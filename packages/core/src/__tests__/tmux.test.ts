@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as childProcess from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   isTmuxAvailable,
   listSessions,
@@ -15,8 +16,12 @@ import {
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
+vi.mock("node:timers/promises", () => ({
+  setTimeout: vi.fn().mockResolvedValue(undefined),
+}));
 
 const mockExecFile = vi.mocked(childProcess.execFile);
+const mockSleep = vi.mocked(sleep);
 
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
@@ -53,6 +58,7 @@ function mockTmuxSequence(results: Array<{ stdout?: string; error?: string }>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockSleep.mockResolvedValue(undefined);
 });
 
 describe("isTmuxAvailable", () => {
@@ -291,6 +297,23 @@ describe("sendKeys", () => {
       return args[0] === "send-keys" && args[args.length - 1] === "Enter";
     });
     expect(enterCalls).toHaveLength(2);
+  });
+
+  it("caps adaptive paste delay for very large messages", async () => {
+    const hugeText = "x".repeat(1_000_000);
+    mockTmuxSequence([
+      { stdout: "" }, // send-keys Escape
+      { stdout: "" }, // load-buffer
+      { stdout: "" }, // paste-buffer
+      { stdout: "before submit" }, // capture-pane baseline
+      { stdout: "" }, // send-keys Enter
+      { stdout: "processing started" }, // capture-pane changed
+      { stdout: "" }, // optional fallback
+    ]);
+
+    await sendKeys("app-1", hugeText);
+
+    expect(mockSleep).toHaveBeenCalledWith(15_000);
   });
 });
 
