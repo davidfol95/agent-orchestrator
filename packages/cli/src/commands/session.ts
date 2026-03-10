@@ -354,11 +354,21 @@ export function registerSession(program: Command): void {
             }
           }
         } else {
-          const result = await recoverSessionById(sessionId, {
-            config,
-            registry,
-            dryRun: opts.dryRun,
-          });
+          let result;
+          try {
+            result = await recoverSessionById(sessionId, {
+              config,
+              registry,
+              dryRun: opts.dryRun,
+            });
+          } catch (err) {
+            console.error(
+              chalk.red(
+                `Recovery failed for session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            );
+            process.exit(1);
+          }
 
           if (!result) {
             console.error(chalk.red(`Session ${sessionId} not found.`));
