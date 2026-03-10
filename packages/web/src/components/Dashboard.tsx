@@ -6,7 +6,6 @@ import {
   type DashboardStats,
   type DashboardPR,
   type AttentionLevel,
-  type GlobalPauseState,
   getAttentionLevel,
   isPRRateLimited,
 } from "@/lib/types";
@@ -15,6 +14,7 @@ import { AttentionZone } from "./AttentionZone";
 import { PRTableRow } from "./PRStatus";
 import { DynamicFavicon } from "./DynamicFavicon";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
+import type { GlobalPauseState } from "@/lib/global-pause";
 
 interface BacklogIssue {
   id: string;
@@ -46,7 +46,8 @@ export function Dashboard({
   initialGlobalPause,
   projectIds = [],
 }: DashboardProps) {
-  const { sessions, globalPause } = useSessionEvents(initialSessions, initialGlobalPause ?? null);
+  const sessions = useSessionEvents(initialSessions);
+  const globalPause = initialGlobalPause ?? null;
   const [rateLimitDismissed, setRateLimitDismissed] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("board");
   const [backlogIssues, setBacklogIssues] = useState<BacklogIssue[]>([]);
