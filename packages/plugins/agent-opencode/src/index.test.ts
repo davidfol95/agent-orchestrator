@@ -1,9 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Session, RuntimeHandle, AgentLaunchConfig } from "@composio/ao-core";
 
-import { join } from "node:path";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
-
 const mockExecFileAsync = vi.fn();
 vi.mock("node:child_process", () => ({
   execFile: (...args: unknown[]) => {
@@ -20,9 +17,6 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { create, manifest, default as defaultExport } from "./index.js";
-
-let _tmpDir: string;
-let _originalPath: string | undefined;
 
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -74,63 +68,6 @@ function mockTmuxWithProcess(processName: string, found = true) {
     }
     return Promise.reject(new Error("unexpected"));
   });
-}
-function _installMockOpencode(
-  sessionListJson: string,
-  deleteLogPath: string,
-  listDelaySeconds = 0,
-  _listLogPath?: string,
-): string {
-  const binDir = join("/tmp", "mock-bin");
-  mkdirSync(binDir, { recursive: true });
-  const scriptPath = join(binDir, "opencode");
-  writeFileSync(
-    scriptPath,
-    [
-      "#!/usr/bin/env bash",
-      "set -euo pipefail",
-      'if [[ "$1" == "session" && "$2" == "list" ]]; then',
-      listDelaySeconds > 0 ? `  sleep ${listDelaySeconds}` : "",
-      `  printf '%s\\n' '${sessionListJson.replace(/'/g, "'\\''")}'`,
-      "  exit 0",
-      "fi",
-      'if [[ "$1" == "session" && "$2" == "delete" ]]; then',
-      `  printf '%s\\n' "$*" >> '${deleteLogPath.replace(/'/g, "'\\''")}'`,
-      "  exit 0",
-      "fi",
-      "exit 1",
-      "",
-    ].join("\n"),
-    "utf-8",
-  );
-  chmodSync(scriptPath, 0o755);
-  process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
-}
-
-function _installMockOpencodeWithNotFoundDelete(sessionListJson: string): string {
-  const binDir = join("/tmp", "mock-bin-not-found");
-  mkdirSync(binDir, { recursive: true });
-  const scriptPath = join(binDir, "opencode");
-  writeFileSync(
-    scriptPath,
-    [
-      "#!/usr/bin/env bash",
-      "set -euo pipefail",
-      'if [[ "$1" == "session" && "$2" == "list" ]]; then',
-      `  printf '%s\\n' '${sessionListJson.replace(/'/g, "'\\''")}'`,
-      "  exit 0",
-      "fi",
-      'if [[ "$1" == "session" && "$2" == "delete" ]]; then',
-      '  printf "Error: Session not found: %s\\n" "$*" >&2',
-      "  exit 1",
-      "fi",
-      "exit 1",
-      "",
-    ].join("\n"),
-    "utf-8",
-  );
-  chmodSync(scriptPath, 0o755);
-  process.env.PATH = `${binDir}:${process.env.PATH ?? ""}`;
 }
 
 beforeEach(() => {
