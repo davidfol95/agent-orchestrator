@@ -32,7 +32,7 @@ const KANBAN_LEVELS = ["working", "pending", "review", "respond", "merge"] as co
 
 export function Dashboard({
   initialSessions,
-  stats,
+  stats: _stats,
   orchestratorId,
   projectId,
   projectName,
@@ -113,6 +113,18 @@ export function Dashboard({
     () => sessions.some((s) => s.pr && isPRRateLimited(s.pr)),
     [sessions],
   );
+  const liveStats = useMemo<DashboardStats>(
+    () => ({
+      totalSessions: sessions.length,
+      workingSessions: sessions.filter((s) => s.activity !== null && s.activity !== "exited")
+        .length,
+      openPRs: sessions.filter((s) => s.pr?.state === "open").length,
+      needsReview: sessions.filter(
+        (s) => s.pr && !s.pr.isDraft && s.pr.reviewDecision === "pending",
+      ).length,
+    }),
+    [sessions],
+  );
   const resumeAtLabel = useMemo(() => {
     if (!globalPause) return null;
     return new Date(globalPause.pausedUntil).toLocaleString();
@@ -133,7 +145,7 @@ export function Dashboard({
             <h1 className="text-[17px] font-semibold tracking-[-0.02em] text-[var(--color-text-primary)]">
               Orchestrator
             </h1>
-            <StatusLine stats={stats} />
+            <StatusLine stats={liveStats} />
           </div>
           {orchestratorId && (
             <a
