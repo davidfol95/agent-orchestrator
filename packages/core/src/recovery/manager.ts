@@ -34,7 +34,7 @@ export async function runRecovery(options: RecoveryManagerOptions): Promise<Reco
   const recoveryConfig: RecoveryConfig = {
     ...DEFAULT_RECOVERY_CONFIG,
     ...options.recoveryConfig,
-    logPath: getRecoveryLogPath(config.configPath),
+    logPath: options.recoveryConfig?.logPath ?? getRecoveryLogPath(config.configPath),
   };
 
   const context: RecoveryContext = {
@@ -149,7 +149,7 @@ export async function recoverSessionById(
   const recoveryConfig: RecoveryConfig = {
     ...DEFAULT_RECOVERY_CONFIG,
     ...options.recoveryConfig,
-    logPath: getRecoveryLogPath(config.configPath),
+    logPath: options.recoveryConfig?.logPath ?? getRecoveryLogPath(config.configPath),
   };
 
   const context: RecoveryContext = {

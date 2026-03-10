@@ -1,11 +1,9 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import type { SessionId, OrchestratorConfig, ProjectConfig } from "../types.js";
-import { readMetadataRaw } from "../metadata.js";
+import { listMetadata, readMetadataRaw } from "../metadata.js";
 import { getSessionsDir, generateConfigHash } from "../paths.js";
-
-const VALID_SESSION_ID = /^[a-zA-Z0-9_-]+$/;
 
 export interface ScannedSession {
   sessionId: SessionId;
@@ -27,19 +25,7 @@ export function scanAllSessions(
     const sessionsDir = getSessionsDir(config.configPath, project.path);
     if (!existsSync(sessionsDir)) continue;
 
-    const files = readdirSync(sessionsDir);
-    for (const file of files) {
-      if (file === "archive" || file.startsWith(".")) continue;
-
-      if (!VALID_SESSION_ID.test(file)) continue;
-
-      const fullPath = join(sessionsDir, file);
-      try {
-        if (!statSync(fullPath).isFile()) continue;
-      } catch {
-        continue;
-      }
-
+    for (const file of listMetadata(sessionsDir)) {
       const rawMetadata = readMetadataRaw(sessionsDir, file);
       if (!rawMetadata) continue;
 

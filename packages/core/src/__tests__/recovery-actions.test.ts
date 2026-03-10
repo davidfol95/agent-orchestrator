@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { readMetadataRaw } from "../metadata.js";
 import { getSessionsDir } from "../paths.js";
 import { escalateSession, recoverSession } from "../recovery/actions.js";
+import { runRecovery } from "../recovery/manager.js";
+import { getRecoveryLogPath, scanAllSessions } from "../recovery/scanner.js";
 import {
   DEFAULT_RECOVERY_CONFIG,
   type RecoveryAssessment,
@@ -183,5 +185,69 @@ describe("escalateSession", () => {
     expect(result.success).toBe(true);
     expect(result.action).toBe("escalate");
     expect(result.reason).toBe("Workspace exists but runtime is missing");
+  });
+});
+
+describe("recovery manager and scanner", () => {
+  let rootDir: string;
+
+  afterEach(() => {
+    if (rootDir) {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("respects custom recovery logPath in manager options", async () => {
+    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
+    mkdirSync(rootDir, { recursive: true });
+    mkdirSync(join(rootDir, "project"), { recursive: true });
+    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
+
+    const config = makeConfig(rootDir);
+    const sessionsDir = getSessionsDir(config.configPath, config.projects.app.path);
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(
+      join(sessionsDir, "app-1"),
+      "project=app\nstatus=terminated\nworktree=/tmp/worktree\n",
+      "utf-8",
+    );
+
+    const customLogPath = join(rootDir, "custom-recovery.log");
+    const registry = makeRegistry();
+
+    await runRecovery({
+      config,
+      registry,
+      recoveryConfig: {
+        ...DEFAULT_RECOVERY_CONFIG,
+        logPath: customLogPath,
+      },
+    });
+
+    expect(existsSync(customLogPath)).toBe(true);
+    expect(readFileSync(customLogPath, "utf-8")).toContain('"sessionId":"app-1"');
+
+    const defaultLogPath = getRecoveryLogPath(config.configPath);
+    expect(defaultLogPath).not.toBe(customLogPath);
+  });
+
+  it("scans sessions using metadata listing rules", () => {
+    rootDir = join(tmpdir(), `ao-recovery-${randomUUID()}`);
+    mkdirSync(rootDir, { recursive: true });
+    mkdirSync(join(rootDir, "project"), { recursive: true });
+    writeFileSync(join(rootDir, "agent-orchestrator.yaml"), "projects: {}\n", "utf-8");
+
+    const config = makeConfig(rootDir);
+    const sessionsDir = getSessionsDir(config.configPath, config.projects.app.path);
+    mkdirSync(sessionsDir, { recursive: true });
+
+    writeFileSync(join(sessionsDir, "app-1"), "project=app\nstatus=working\n", "utf-8");
+    writeFileSync(join(sessionsDir, ".tmp"), "project=app\n", "utf-8");
+    writeFileSync(join(sessionsDir, "bad.session"), "project=app\n", "utf-8");
+
+    const scanned = scanAllSessions(config);
+
+    expect(scanned).toHaveLength(1);
+    expect(scanned[0]?.sessionId).toBe("app-1");
   });
 });
