@@ -599,6 +599,7 @@ export interface SCMWebhookRequest {
   method: string;
   headers: Record<string, string | string[] | undefined>;
   body: string;
+  rawBody?: Uint8Array;
   path?: string;
   query?: Record<string, string | string[] | undefined>;
 }

@@ -118,9 +118,13 @@ function getGitHubWebhookConfig(project: ProjectConfig) {
   };
 }
 
-function verifyGitHubSignature(body: string, secret: string, signatureHeader: string): boolean {
+function verifyGitHubSignature(
+  body: string | Uint8Array,
+  secret: string,
+  signatureHeader: string,
+): boolean {
   if (!signatureHeader.startsWith("sha256=")) return false;
-  const expected = createHmac("sha256", secret).update(Buffer.from(body, "utf8")).digest("hex");
+  const expected = createHmac("sha256", secret).update(body).digest("hex");
   const provided = signatureHeader.slice("sha256=".length);
   const expectedBuffer = Buffer.from(expected, "hex");
   const providedBuffer = Buffer.from(provided, "hex");
@@ -354,7 +358,7 @@ function createGitHubSCM(): SCM {
         return { ok: false, reason: `Missing ${config.signatureHeader} header` };
       }
 
-      if (!verifyGitHubSignature(request.body, secret, signature)) {
+      if (!verifyGitHubSignature(request.rawBody ?? request.body, secret, signature)) {
         return {
           ok: false,
           reason: "Webhook signature verification failed",

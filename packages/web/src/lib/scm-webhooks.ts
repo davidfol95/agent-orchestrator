@@ -60,12 +60,17 @@ export function findAffectedSessions(
   });
 }
 
-export function buildWebhookRequest(request: Request, body: string): SCMWebhookRequest {
+export function buildWebhookRequest(
+  request: Request,
+  body: string,
+  rawBody: Uint8Array,
+): SCMWebhookRequest {
   const url = new URL(request.url);
   return {
     method: request.method,
     headers: requestHeadersToRecord(request.headers),
     body,
+    rawBody,
     path: url.pathname,
     query: Object.fromEntries(url.searchParams.entries()),
   };

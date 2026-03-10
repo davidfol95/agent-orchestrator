@@ -9,8 +9,7 @@ import {
   type SCM,
   type LifecycleManager,
 } from "@composio/ao-core";
-import * as serialize from "@/lib/serialize";
-import { createScopedLifecycleManager, getSCM } from "@/lib/services";
+import { createScopedLifecycleManager } from "@/lib/services";
 
 // ── Mock Data ─────────────────────────────────────────────────────────
 // Provides test sessions covering the key states the dashboard needs.

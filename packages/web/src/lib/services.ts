@@ -84,14 +84,10 @@ export function getSCM(registry: PluginRegistry, project: ProjectConfig | undefi
   return registry.get<SCM>("scm", project.scm.plugin);
 }
 
-export function createScopedLifecycleManager(
-  services: Services,
-  projectId?: string,
-): LifecycleManager {
+export function createScopedLifecycleManager(services: Services): LifecycleManager {
   return createLifecycleManager({
     config: services.config,
     registry: services.registry,
     sessionManager: services.sessionManager,
-    projectId,
   });
 }

@@ -11,9 +11,10 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<Response> {
   try {
-    const body = new TextDecoder().decode(await request.arrayBuffer());
+    const rawBody = new Uint8Array(await request.arrayBuffer());
+    const body = new TextDecoder().decode(rawBody);
     const services = await getServices();
-    const webhookRequest = buildWebhookRequest(request, body);
+    const webhookRequest = buildWebhookRequest(request, body, rawBody);
     const candidates = findWebhookProjects(
       services.config,
       services.registry,
@@ -61,7 +62,7 @@ export async function POST(request: Request): Promise<Response> {
         continue;
       }
 
-      const lifecycle = createScopedLifecycleManager(services, candidate.projectId);
+      const lifecycle = createScopedLifecycleManager(services);
       for (const session of affectedSessions) {
         sessionIds.add(session.id);
         await lifecycle.check(session.id);
