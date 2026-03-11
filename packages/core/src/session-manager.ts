@@ -347,11 +347,13 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     raw: Record<string, string>,
     updates: Partial<Record<string, string>>,
   ): Record<string, string> {
-    const next = { ...raw };
+    let next = { ...raw };
     for (const [key, value] of Object.entries(updates)) {
       if (value === undefined) continue;
       if (value === "") {
-        delete next[key];
+        const { [key]: _removed, ...rest } = next;
+        void _removed;
+        next = rest;
         continue;
       }
       next[key] = value;
