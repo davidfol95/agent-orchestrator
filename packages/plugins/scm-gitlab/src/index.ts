@@ -161,6 +161,18 @@ function parseGitLabRepository(payload: Record<string, unknown>) {
   return { owner: namespace, name };
 }
 
+function parseGitLabCiBranch(
+  payload: Record<string, unknown>,
+  objectAttributes: Record<string, unknown> | undefined,
+): string | undefined {
+  const isTag =
+    objectAttributes?.["tag"] === true ||
+    payload["ref_type"] === "tag" ||
+    payload["object_kind"] === "tag_push";
+  if (isTag) return undefined;
+  return parseWebhookBranchRef(payload["ref"] ?? objectAttributes?.["ref"]);
+}
+
 function parseGitLabWebhookEvent(
   request: SCMWebhookRequest,
   payload: Record<string, unknown>,
@@ -258,7 +270,7 @@ function parseGitLabWebhookEvent(
           ? (((payload["merge_request"] as Record<string, unknown>)["iid"] as number | undefined) ??
             ((payload["merge_request"] as Record<string, unknown>)["id"] as number | undefined))
           : undefined,
-      branch: parseWebhookBranchRef(payload["ref"] ?? objectAttributes?.["ref"]),
+      branch: parseGitLabCiBranch(payload, objectAttributes),
       sha:
         typeof payload["checkout_sha"] === "string"
           ? (payload["checkout_sha"] as string)

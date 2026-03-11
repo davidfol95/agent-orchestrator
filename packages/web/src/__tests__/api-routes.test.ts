@@ -177,7 +177,6 @@ vi.mock("@/lib/services", () => ({
     sessionManager: mockSessionManager,
     lifecycleManager: mockLifecycleManager,
   })),
-  createScopedLifecycleManager: vi.fn(() => mockLifecycleManager),
   getSCM: vi.fn(() => mockSCM),
   startBacklogPoller: vi.fn(() => {}),
 }));

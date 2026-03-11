@@ -249,6 +249,38 @@ describe("scm-gitlab plugin", () => {
         }),
       );
     });
+
+    it("does not set branch for tag pipeline refs", async () => {
+      const event = await scm.parseWebhook?.(
+        makeWebhookRequest({
+          headers: {
+            "x-gitlab-event": "Pipeline Hook",
+            "x-gitlab-event-uuid": "delivery-4",
+          },
+          body: JSON.stringify({
+            object_kind: "pipeline",
+            ref: "v1.0.0",
+            ref_type: "tag",
+            checkout_sha: "def456",
+            project: { path_with_namespace: "acme/repo" },
+            object_attributes: {
+              ref: "v1.0.0",
+              tag: true,
+              updated_at: "2026-03-11T01:00:00Z",
+            },
+          }),
+        }),
+        project,
+      );
+      expect(event).toEqual(
+        expect.objectContaining({
+          provider: "gitlab",
+          kind: "ci",
+          branch: undefined,
+          sha: "def456",
+        }),
+      );
+    });
   });
 
   // ---- detectPR ----------------------------------------------------------
