@@ -437,31 +437,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     const duplicatePRAttachments = new Map<string, ActiveSessionRecord[]>();
 
     for (const record of repaired) {
-      const updates: Partial<Record<string, string>> = {};
-
       if (isOrchestratorSessionRecord(record.sessionName, record.raw)) {
-        if (record.raw["role"] !== "orchestrator") {
-          updates["role"] = "orchestrator";
-        }
-        if (record.raw["pr"]) {
-          updates["pr"] = "";
-        }
-        if (record.raw["prAutoDetect"] !== "off") {
-          updates["prAutoDetect"] = "off";
-        }
-        if (STALE_PR_OWNERSHIP_STATUSES.has(record.raw["status"] ?? "")) {
-          updates["status"] = "working";
-        }
-
-        if (Object.keys(updates).length > 0) {
-          updateMetadataPreservingMtime(
-            sessionsDir,
-            record.sessionName,
-            updates,
-            record.modifiedAt,
-          );
-          record.raw = applyMetadataUpdatesToRaw(record.raw, updates);
-        }
+        record.raw = repairSingleSessionMetadataOnRead(sessionsDir, record).raw;
         continue;
       }
 
