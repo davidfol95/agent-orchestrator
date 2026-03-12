@@ -220,6 +220,24 @@ const SEND_CONFIRMATION_ATTEMPTS = 3;
 const SEND_CONFIRMATION_POLL_MS = 500;
 const SEND_CONFIRMATION_OUTPUT_LINES = 20;
 
+function metadataUpdatesFromRuntimeHandle(handle: RuntimeHandle): Record<string, string> {
+  const metadata = handle.data["metadata"];
+  if (!metadata || typeof metadata !== "object") return {};
+
+  const updates: Record<string, string> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (typeof value === "string") {
+      updates[key] = value;
+      continue;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      updates[key] = String(value);
+    }
+  }
+
+  return updates;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -507,6 +525,14 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       opencodeSessionId: "",
       opencodeCleanedAt: new Date().toISOString(),
     });
+  }
+
+  function markArchivedResourceCleanup(
+    sessionsDir: string,
+    sessionId: SessionId,
+    updates: Partial<Record<string, string>>,
+  ): void {
+    updateArchivedMetadata(sessionsDir, sessionId, updates);
   }
 
   function sortSessionIdsForReuse(ids: string[]): string[] {
@@ -1078,6 +1104,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         opencodeSessionId: reusedOpenCodeSessionId,
       });
 
+      const runtimeMetadataUpdates = metadataUpdatesFromRuntimeHandle(handle);
+      if (Object.keys(runtimeMetadataUpdates).length > 0) {
+        updateMetadata(sessionsDir, sessionId, runtimeMetadataUpdates);
+        Object.assign(session.metadata, runtimeMetadataUpdates);
+      }
+
       if (plugins.agent.postLaunchSetup) {
         await plugins.agent.postLaunchSetup(session);
       }
@@ -1349,6 +1381,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         opencodeSessionId: reusableOpenCodeSessionId,
       });
 
+      const runtimeMetadataUpdates = metadataUpdatesFromRuntimeHandle(handle);
+      if (Object.keys(runtimeMetadataUpdates).length > 0) {
+        updateMetadata(sessionsDir, sessionId, runtimeMetadataUpdates);
+        Object.assign(session.metadata, runtimeMetadataUpdates);
+      }
+
       if (plugins.agent.postLaunchSetup) {
         await plugins.agent.postLaunchSetup(session);
       }
@@ -1502,6 +1540,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     const { raw, sessionsDir, project, projectId } = requireSessionRecord(sessionId);
 
     const cleanupAgent = raw["agent"] ?? project?.agent ?? config.defaults.agent;
+    let runtimeCleanedAt: string | null = raw["runtimeHandle"] ? null : new Date().toISOString();
+    let workspaceCleanedAt: string | null = raw["worktree"] ? null : new Date().toISOString();
 
     // Destroy runtime — prefer handle.runtimeName to find the correct plugin
     if (raw["runtimeHandle"]) {
@@ -1515,6 +1555,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         if (runtimePlugin) {
           try {
             await runtimePlugin.destroy(handle);
+            runtimeCleanedAt = new Date().toISOString();
           } catch {
             // Runtime might already be gone
           }
@@ -1530,6 +1571,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       if (workspacePlugin) {
         try {
           await workspacePlugin.destroy(worktree);
+          workspaceCleanedAt = new Date().toISOString();
         } catch {
           // Workspace might already be gone
         }
@@ -1557,6 +1599,10 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
     // Archive metadata
     deleteMetadata(sessionsDir, sessionId, true);
+    markArchivedResourceCleanup(sessionsDir, sessionId, {
+      ...(runtimeCleanedAt ? { runtimeCleanedAt } : {}),
+      ...(workspaceCleanedAt ? { workspaceCleanedAt } : {}),
+    });
     if (didPurgeOpenCodeSession) {
       markArchivedOpenCodeCleanup(sessionsDir, sessionId);
     }
@@ -1684,9 +1730,69 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         }
 
         const cleanupAgent = archived["agent"] ?? project.agent ?? config.defaults.agent;
+        const hasArchivedOpenCodeId = archived["opencodeSessionId"] !== undefined;
+        const archivedHandle = archived["runtimeHandle"]
+          ? safeJsonParse<RuntimeHandle>(archived["runtimeHandle"])
+          : null;
+        let archivedResourcesCleaned = false;
+
+        if (!options?.dryRun && archivedHandle && !archived["runtimeCleanedAt"]) {
+          const runtimePlugin = registry.get<Runtime>(
+            "runtime",
+            archivedHandle.runtimeName ?? project.runtime ?? config.defaults.runtime,
+          );
+          if (runtimePlugin) {
+            try {
+              await runtimePlugin.destroy(archivedHandle);
+              markArchivedResourceCleanup(sessionsDir, archivedId, {
+                runtimeCleanedAt: new Date().toISOString(),
+              });
+              archivedResourcesCleaned = true;
+            } catch (err) {
+              result.errors.push({
+                sessionId: archivedId,
+                error: `Failed to clean archived runtime resources: ${err instanceof Error ? err.message : String(err)}`,
+              });
+            }
+          }
+        }
+
+        const archivedWorktree = archived["worktree"];
+        if (
+          !options?.dryRun &&
+          archivedWorktree &&
+          !archived["workspaceCleanedAt"] &&
+          shouldDestroyWorkspacePath(project, projectKey, archivedWorktree)
+        ) {
+          const workspacePlugin = resolvePlugins(project).workspace;
+          if (workspacePlugin) {
+            try {
+              await workspacePlugin.destroy(archivedWorktree);
+              markArchivedResourceCleanup(sessionsDir, archivedId, {
+                workspaceCleanedAt: new Date().toISOString(),
+              });
+              archivedResourcesCleaned = true;
+            } catch (err) {
+              result.errors.push({
+                sessionId: archivedId,
+                error: `Failed to clean archived workspace resources: ${err instanceof Error ? err.message : String(err)}`,
+              });
+            }
+          }
+        }
+
         const mappedOpenCodeSessionId = asValidOpenCodeSessionId(archived["opencodeSessionId"]);
-        if (cleanupAgent === "opencode" && archived["opencodeCleanedAt"]) {
+        if (cleanupAgent === "opencode" && hasArchivedOpenCodeId && !mappedOpenCodeSessionId) {
           pushSkipped(projectKey, archivedId);
+          continue;
+        }
+        if (cleanupAgent === "opencode" && mappedOpenCodeSessionId && shouldPurgeOpenCode) {
+        if (cleanupAgent === "opencode" && archived["opencodeCleanedAt"]) {
+          if (archivedResourcesCleaned) {
+            pushKilled(projectKey, archivedId);
+          } else {
+            pushSkipped(projectKey, archivedId);
+          }
           continue;
         }
         if (cleanupAgent === "opencode" && mappedOpenCodeSessionId && shouldPurgeOpenCode) {
@@ -1702,6 +1808,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
               continue;
             }
           }
+          pushKilled(projectKey, archivedId);
+        } else if (archivedResourcesCleaned) {
           pushKilled(projectKey, archivedId);
         } else {
           pushSkipped(projectKey, archivedId);
@@ -2251,6 +2359,11 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       restoredAt: now,
     });
 
+    const runtimeMetadataUpdates = metadataUpdatesFromRuntimeHandle(handle);
+    if (Object.keys(runtimeMetadataUpdates).length > 0) {
+      updateMetadata(sessionsDir, sessionId, runtimeMetadataUpdates);
+    }
+
     // 10. Run postLaunchSetup (non-fatal)
     const restoredSession: Session = {
       ...session,
@@ -2259,6 +2372,10 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       workspacePath,
       runtimeHandle: handle,
       restoredAt: new Date(now),
+      metadata: {
+        ...session.metadata,
+        ...runtimeMetadataUpdates,
+      },
     };
 
     if (plugins.agent.postLaunchSetup) {

@@ -16,6 +16,7 @@ import {
   writeMetadata,
   readMetadata,
   readMetadataRaw,
+  readArchivedMetadataRaw,
   deleteMetadata,
   reserveSessionId,
   updateMetadata,
@@ -276,6 +277,26 @@ describe("spawn", () => {
       "Project is paused due to model rate limit until",
     );
     expect(mockRuntime.create).not.toHaveBeenCalled();
+  });
+
+  it("persists runtime metadata emitted by the runtime handle", async () => {
+    vi.mocked(mockRuntime.create).mockResolvedValueOnce({
+      id: "rt-1",
+      runtimeName: "mock",
+      data: {
+        metadata: {
+          dashboardUrl: "http://127.0.0.1:38123",
+          dashboardPort: "38123",
+        },
+      },
+    });
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    await sm.spawn({ projectId: "my-app" });
+
+    const raw = readMetadataRaw(sessionsDir, "app-1");
+    expect(raw?.["dashboardUrl"]).toBe("http://127.0.0.1:38123");
+    expect(raw?.["dashboardPort"]).toBe("38123");
   });
 
   it("uses issue ID to derive branch name", async () => {
@@ -1892,6 +1913,29 @@ describe("cleanup", () => {
     expect(result.killed).toContain("app-6");
     const deleteLog = readFileSync(deleteLogPath, "utf-8");
     expect(deleteLog).toContain("session delete ses_archived");
+  });
+
+  it("retries archived runtime cleanup for non-OpenCode sessions", async () => {
+    writeMetadata(sessionsDir, "app-9", {
+      worktree: join(tmpDir, "my-app", "wt-app-9"),
+      branch: "feat/TEST-9",
+      status: "killed",
+      project: "my-app",
+      runtimeHandle: JSON.stringify({ id: "rt-archived", runtimeName: "mock", data: {} }),
+    });
+    deleteMetadata(sessionsDir, "app-9", true);
+
+    const sm = createSessionManager({ config, registry: mockRegistry });
+    const result = await sm.cleanup();
+
+    expect(result.killed).toContain("app-9");
+    expect(mockRuntime.destroy).toHaveBeenCalledWith({
+      id: "rt-archived",
+      runtimeName: "mock",
+      data: {},
+    });
+    const archived = readArchivedMetadataRaw(sessionsDir, "app-9");
+    expect(archived?.["runtimeCleanedAt"]).toBeDefined();
   });
 
   it("does not skip archived cleanup for matching session IDs in other projects", async () => {
