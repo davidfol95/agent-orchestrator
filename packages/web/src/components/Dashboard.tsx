@@ -30,6 +30,19 @@ interface DashboardProps {
 
 const KANBAN_LEVELS = ["working", "pending", "review", "respond", "merge"] as const;
 
+function mergeOrchestrators(
+  current: DashboardOrchestratorLink[],
+  incoming: DashboardOrchestratorLink[],
+): DashboardOrchestratorLink[] {
+  const merged = new Map(current.map((orchestrator) => [orchestrator.projectId, orchestrator]));
+
+  for (const orchestrator of incoming) {
+    merged.set(orchestrator.projectId, orchestrator);
+  }
+
+  return [...merged.values()];
+}
+
 export function Dashboard({
   initialSessions,
   projectId,
@@ -45,8 +58,16 @@ export function Dashboard({
   );
   const [rateLimitDismissed, setRateLimitDismissed] = useState(false);
   const [globalPauseDismissed, setGlobalPauseDismissed] = useState(false);
+  const [activeOrchestrators, setActiveOrchestrators] =
+    useState<DashboardOrchestratorLink[]>(orchestrators);
+  const [spawningProjectIds, setSpawningProjectIds] = useState<string[]>([]);
+  const [spawnErrors, setSpawnErrors] = useState<Record<string, string>>({});
   const showSidebar = projects.length > 1;
   const allProjectsView = showSidebar && projectId === undefined;
+
+  useEffect(() => {
+    setActiveOrchestrators((current) => mergeOrchestrators(current, orchestrators));
+  }, [orchestrators]);
 
   const grouped = useMemo(() => {
     const zones: Record<AttentionLevel, DashboardSession[]> = {
@@ -94,13 +115,13 @@ export function Dashboard({
       return {
         project,
         orchestrator:
-          orchestrators.find((orchestrator) => orchestrator.projectId === project.id) ?? null,
+          activeOrchestrators.find((orchestrator) => orchestrator.projectId === project.id) ?? null,
         sessionCount: projectSessions.length,
         openPRCount: projectSessions.filter((session) => session.pr?.state === "open").length,
         counts,
       };
     });
-  }, [allProjectsView, orchestrators, projects, sessions]);
+  }, [activeOrchestrators, allProjectsView, projects, sessions]);
 
   const handleSend = async (sessionId: string, message: string) => {
     const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/send`, {
@@ -137,6 +158,44 @@ export function Dashboard({
     });
     if (!res.ok) {
       console.error(`Failed to restore ${sessionId}:`, await res.text());
+    }
+  };
+
+  const handleSpawnOrchestrator = async (project: ProjectInfo) => {
+    setSpawningProjectIds((current) =>
+      current.includes(project.id) ? current : [...current, project.id],
+    );
+    setSpawnErrors(({ [project.id]: _ignored, ...current }) => current);
+
+    try {
+      const res = await fetch("/api/orchestrators", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id }),
+      });
+
+      const data = (await res.json().catch(() => null)) as {
+        orchestrator?: DashboardOrchestratorLink;
+        error?: string;
+      } | null;
+
+      if (!res.ok || !data?.orchestrator) {
+        throw new Error(data?.error ?? `Failed to spawn orchestrator for ${project.name}`);
+      }
+
+      const orchestrator = data.orchestrator;
+
+      setActiveOrchestrators((current) => {
+        const next = current.filter((orchestrator) => orchestrator.projectId !== project.id);
+        next.push(orchestrator);
+        return next;
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to spawn orchestrator";
+      setSpawnErrors((current) => ({ ...current, [project.id]: message }));
+      console.error(`Failed to spawn orchestrator for ${project.id}:`, error);
+    } finally {
+      setSpawningProjectIds((current) => current.filter((id) => id !== project.id));
     }
   };
 
@@ -182,7 +241,7 @@ export function Dashboard({
             </h1>
             <StatusLine stats={liveStats} />
           </div>
-          {!allProjectsView && <OrchestratorControl orchestrators={orchestrators} />}
+          {!allProjectsView && <OrchestratorControl orchestrators={activeOrchestrators} />}
         </div>
 
         {globalPause && !globalPauseDismissed && (
@@ -258,7 +317,14 @@ export function Dashboard({
           </div>
         )}
 
-        {allProjectsView && <ProjectOverviewGrid overviews={projectOverviews} />}
+        {allProjectsView && (
+          <ProjectOverviewGrid
+            overviews={projectOverviews}
+            onSpawnOrchestrator={handleSpawnOrchestrator}
+            spawningProjectIds={spawningProjectIds}
+            spawnErrors={spawnErrors}
+          />
+        )}
 
         {!allProjectsView && hasKanbanSessions && (
           <div className="mb-8 flex gap-4 overflow-x-auto pb-2">
@@ -408,6 +474,9 @@ function OrchestratorControl({ orchestrators }: { orchestrators: DashboardOrches
 
 function ProjectOverviewGrid({
   overviews,
+  onSpawnOrchestrator,
+  spawningProjectIds,
+  spawnErrors,
 }: {
   overviews: Array<{
     project: ProjectInfo;
@@ -416,6 +485,9 @@ function ProjectOverviewGrid({
     openPRCount: number;
     counts: Record<AttentionLevel, number>;
   }>;
+  onSpawnOrchestrator: (project: ProjectInfo) => Promise<void>;
+  spawningProjectIds: string[];
+  spawnErrors: Record<string, string>;
 }) {
   return (
     <div className="mb-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -462,18 +534,34 @@ function ProjectOverviewGrid({
             />
           </div>
 
-          <div className="flex items-center justify-between border-t border-[var(--color-border-subtle)] pt-3">
-            <div className="text-[11px] text-[var(--color-text-muted)]">
-              {orchestrator ? "Per-project orchestrator available" : "No running orchestrator"}
+          <div className="border-t border-[var(--color-border-subtle)] pt-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[11px] text-[var(--color-text-muted)]">
+                {orchestrator ? "Per-project orchestrator available" : "No running orchestrator"}
+              </div>
+              {orchestrator ? (
+                <a
+                  href={`/sessions/${encodeURIComponent(orchestrator.id)}`}
+                  className="orchestrator-btn flex items-center gap-2 rounded-[7px] px-3 py-1.5 text-[11px] font-semibold hover:no-underline"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] opacity-80" />
+                  orchestrator
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void onSpawnOrchestrator(project)}
+                  disabled={spawningProjectIds.includes(project.id)}
+                  className="orchestrator-btn rounded-[7px] px-3 py-1.5 text-[11px] font-semibold disabled:cursor-wait disabled:opacity-70"
+                >
+                  {spawningProjectIds.includes(project.id) ? "Spawning..." : "Spawn Orchestrator"}
+                </button>
+              )}
             </div>
-            {orchestrator ? (
-              <a
-                href={`/sessions/${encodeURIComponent(orchestrator.id)}`}
-                className="orchestrator-btn flex items-center gap-2 rounded-[7px] px-3 py-1.5 text-[11px] font-semibold hover:no-underline"
-              >
-                <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] opacity-80" />
-                orchestrator
-              </a>
+            {spawnErrors[project.id] ? (
+              <p className="mt-2 text-[11px] text-[var(--color-status-error)]">
+                {spawnErrors[project.id]}
+              </p>
             ) : null}
           </div>
         </section>
