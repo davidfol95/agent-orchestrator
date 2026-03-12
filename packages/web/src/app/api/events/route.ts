@@ -18,14 +18,13 @@ export const dynamic = "force-dynamic";
 export async function GET(): Promise<Response> {
   const encoder = new TextEncoder();
   const correlationId = createCorrelationId("sse");
+  type ServicesConfig = Awaited<ReturnType<typeof getServices>>["config"];
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let updates: ReturnType<typeof setInterval> | undefined;
   let observerProjectId: string | undefined;
   let observer: ProjectObserver | null = null;
 
-  const ensureObserver = (config: {
-    projects: Record<string, unknown>;
-  }): ProjectObserver | null => {
+  const ensureObserver = (config: ServicesConfig): ProjectObserver | null => {
     if (!observerProjectId) {
       observerProjectId = Object.keys(config.projects)[0];
     }
