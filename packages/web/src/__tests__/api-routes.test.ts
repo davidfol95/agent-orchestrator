@@ -732,6 +732,12 @@ describe("API Routes", () => {
       const data = await res.json();
       expect(data.reviewIntegrityStatus).toBe("fail");
       expect(data.guardBlockers?.length).toBeGreaterThan(0);
+      expect(
+        data.guardBlockers.some(
+          (b: { code: string; checkName?: string }) =>
+            b.code === "REQUIRED_CHECK_NOT_PASSING" && b.checkName === "ao/merge-guard",
+        ),
+      ).toBe(false);
     });
 
     it("fails closed when SCM lacks full review thread snapshots", async () => {
