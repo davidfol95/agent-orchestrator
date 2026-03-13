@@ -182,9 +182,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
   /** Check if idle time exceeds the agent-stuck threshold. */
   function isIdleBeyondThreshold(session: Session, idleTimestamp: Date): boolean {
-    const stuckReaction =
-      config.projects[session.projectId]?.reactions?.["agent-stuck"] ??
-      config.reactions["agent-stuck"];
+    const stuckReaction = getReactionConfigForSession(session, "agent-stuck");
     const thresholdStr = (stuckReaction as Record<string, unknown> | undefined)?.threshold;
     if (typeof thresholdStr !== "string") return false;
     const stuckThresholdMs = parseDuration(thresholdStr);
