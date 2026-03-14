@@ -52,6 +52,9 @@ export async function getSessionManager(
 /**
  * Create a LifecycleManager backed by core's implementation.
  * Shares the same plugin registry initialization path as SessionManager.
+ * Auto-cleanup on merge is enabled here because this factory is only used by
+ * the lifecycle-worker (the `ao start` poll loop). Ad-hoc `ao spawn` usage
+ * does not start the poll loop, so cleanup remains manual (`ao session cleanup`).
  */
 export async function getLifecycleManager(
   config: OrchestratorConfig,
@@ -59,5 +62,5 @@ export async function getLifecycleManager(
 ): Promise<LifecycleManager> {
   const registry = await getRegistry(config);
   const sessionManager = createSessionManager({ config, registry });
-  return createLifecycleManager({ config, registry, sessionManager, projectId });
+  return createLifecycleManager({ config, registry, sessionManager, projectId, autoCleanupOnMerge: true });
 }
