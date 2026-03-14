@@ -73,9 +73,27 @@ async function checkGhAuth(): Promise<void> {
   }
 }
 
+/**
+ * Check that the bd (beads) CLI is installed and accessible.
+ * Non-fatal: warns but does not throw, since bd is only needed for
+ * projects configured to use the beads tracker plugin.
+ */
+export async function checkBd(): Promise<{ ok: boolean; message?: string }> {
+  try {
+    await exec("bd", ["version"]);
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      message: "bd (beads) is not installed or not on PATH. Install it to use the beads tracker plugin.",
+    };
+  }
+}
+
 export const preflight = {
   checkPort,
   checkBuilt,
   checkTmux,
   checkGhAuth,
+  checkBd,
 };
