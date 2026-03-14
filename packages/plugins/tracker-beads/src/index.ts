@@ -216,11 +216,13 @@ function createBeadsTracker(): Tracker {
         args.push(`--assignee=${input.assignee}`);
       }
 
-      // bd create outputs something like "Created issue RU_Pro-abc"
+      // bd create outputs something like "Created issue: RU_Pro-abc — <title>"
       const output = await bd(args, project.path);
 
-      // Extract issue id from output
-      const match = output.match(/([A-Za-z0-9]+-[A-Za-z0-9]+)\s*$/);
+      // Extract issue id — try "Created issue: <id>" first, then end-of-line fallback
+      const match =
+        output.match(/Created issue:\s+([A-Za-z0-9_]+-[A-Za-z0-9]+)/i) ??
+        output.match(/([A-Za-z0-9_]+-[A-Za-z0-9]+)\s*$/);
       if (!match?.[1]) {
         throw new Error(`Failed to parse issue id from bd create output: ${output}`);
       }
