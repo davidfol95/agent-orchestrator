@@ -53,7 +53,7 @@ function inferScmPlugin(project: {
 const ReactionConfigSchema = z.object({
   auto: z.boolean().default(true),
   action: z
-    .enum(["send-to-agent", "notify", "auto-merge", "security-scan", "review-pass"])
+    .enum(["send-to-agent", "notify", "auto-merge", "security-scan", "close-issue"])
     .default("notify"),
   message: z.string().optional(),
   model: z.string().optional(),
@@ -385,10 +385,7 @@ function applyDefaultReactions(config: OrchestratorConfig): OrchestratorConfig {
       auto: true,
       action: "security-scan",
     },
-    "review-pass": {
-      auto: false,
-      action: "review-pass",
-    },
+    // review-pass is embedded within the security-scan flow, not a standalone action
   };
 
   // Merge defaults with user-specified reactions (user wins)

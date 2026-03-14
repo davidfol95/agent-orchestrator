@@ -13,6 +13,8 @@ interface ReadyIssue {
   [key: string]: unknown;
 }
 
+const ISSUE_ID_RE = /^[A-Za-z0-9_]+-[A-Za-z0-9.]+$/;
+
 /**
  * Run preflight checks required for spawn-ready.
  * Validates tmux and bd availability.
@@ -45,7 +47,8 @@ async function fetchReadyIssues(
 
   try {
     const parsed = JSON.parse(stdout);
-    return Array.isArray(parsed) ? (parsed as ReadyIssue[]) : [];
+    const issues = Array.isArray(parsed) ? (parsed as ReadyIssue[]) : [];
+    return issues.filter((issue) => typeof issue.id === "string" && ISSUE_ID_RE.test(issue.id));
   } catch {
     // bd ready --json may not be supported — fall back to empty
     return [];

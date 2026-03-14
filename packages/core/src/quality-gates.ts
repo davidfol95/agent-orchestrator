@@ -47,13 +47,13 @@ export async function runSecurityScan(
     const { stdout } = await execFileAsync(
       "git",
       ["diff", `origin/${baseBranch}...HEAD`],
-      { cwd: workspacePath },
+      { cwd: workspacePath, maxBuffer: 10 * 1024 * 1024 },
     );
     diff = stdout;
   } catch (err) {
-    // If git command fails (e.g. no commits yet), treat as clean
+    // A scan that cannot execute is not clean — report as failed
     const message = err instanceof Error ? err.message : String(err);
-    return { clean: true, findings: [`git diff failed: ${message}`] };
+    return { clean: false, findings: [`Security scan inconclusive — git diff failed: ${message}`] };
   }
 
   // Only examine added lines (lines starting with '+' but not the diff header '+++')
@@ -73,7 +73,7 @@ export async function runSecurityScan(
       if (pattern.test(content)) {
         // Reset after test() so repeated calls work correctly
         pattern.lastIndex = 0;
-        findings.push(`Potential secret detected: ${line.trim()}`);
+        findings.push(`Potential secret detected (pattern: ${pattern.source.slice(0, 40)})`);
         break; // One finding per line is enough
       }
       pattern.lastIndex = 0;
@@ -189,12 +189,13 @@ export async function runReviewPass(
   try {
     const { stdout } = await execFileAsync("git", ["diff", `origin/${baseBranch}...HEAD`], {
       cwd: workspacePath,
+      maxBuffer: 10 * 1024 * 1024,
     });
     diffContent = stdout;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[quality-gates] Review pass unavailable: git diff failed: ${message}`);
-    return { clean: true, feedback: "Review unavailable", securityConcerns: false };
+    return { clean: false, feedback: "Review unavailable — git diff failed", securityConcerns: false };
   }
 
   // Truncate diffs > 100K chars

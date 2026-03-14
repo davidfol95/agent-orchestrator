@@ -38,6 +38,18 @@ interface BeadsIssue {
 }
 
 // ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+const ISSUE_ID_RE = /^[A-Za-z0-9_]+-[A-Za-z0-9.]+$/;
+
+function assertValidIssueId(id: string): void {
+  if (!ISSUE_ID_RE.test(id)) {
+    throw new Error(`Invalid issue identifier: "${id}"`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -104,11 +116,13 @@ function createBeadsTracker(): Tracker {
     name: "beads",
 
     async getIssue(identifier: string, project: ProjectConfig): Promise<Issue> {
+      assertValidIssueId(identifier);
       const data = await bdShowOne(identifier, project.path);
       return toAoIssue(data);
     },
 
     async isCompleted(identifier: string, project: ProjectConfig): Promise<boolean> {
+      assertValidIssueId(identifier);
       const data = await bdShowOne(identifier, project.path);
       return data.status.toLowerCase() === "closed";
     },
@@ -131,6 +145,7 @@ function createBeadsTracker(): Tracker {
     },
 
     async generatePrompt(identifier: string, project: ProjectConfig): Promise<string> {
+      assertValidIssueId(identifier);
       const data = await bdShowOne(identifier, project.path);
       const lines: string[] = [
         `You are working on Beads issue ${data.id}: ${data.title}`,
@@ -188,6 +203,7 @@ function createBeadsTracker(): Tracker {
       update: IssueUpdate,
       project: ProjectConfig,
     ): Promise<void> {
+      assertValidIssueId(identifier);
       if (update.state === "closed") {
         await bd(["close", identifier], project.path);
       } else if (update.state === "open") {
@@ -201,7 +217,7 @@ function createBeadsTracker(): Tracker {
       }
 
       if (update.comment) {
-        await bd(["comments", "add", identifier, update.comment], project.path);
+        await bd(["comments", "add", identifier, "--", update.comment], project.path);
       }
     },
 
