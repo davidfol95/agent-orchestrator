@@ -843,8 +843,11 @@ export interface ReactionConfig {
   /** Whether this reaction is enabled */
   auto: boolean;
 
-  /** What to do: send message to agent, notify human, auto-merge */
-  action: "send-to-agent" | "notify" | "auto-merge";
+  /** What to do: send message to agent, notify human, auto-merge, run security scan, or run review pass */
+  action: "send-to-agent" | "notify" | "auto-merge" | "security-scan" | "review-pass";
+
+  /** Model to use for AI-driven actions (e.g. review-pass) */
+  model?: string;
 
   /** Message to send (for send-to-agent) */
   message?: string;
@@ -1008,6 +1011,14 @@ export interface ProjectConfig {
     model: string;
     /** Require human approval before executing decomposed plans (default: true) */
     requireApproval: boolean;
+  };
+
+  /** Quality gate configuration */
+  qualityGates?: {
+    /** Custom prompt to use for the review-pass gate */
+    reviewerPrompt?: string;
+    /** Model to use for the review-pass gate */
+    reviewModel?: string;
   };
 }
 

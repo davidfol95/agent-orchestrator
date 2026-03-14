@@ -52,8 +52,11 @@ function inferScmPlugin(project: {
 
 const ReactionConfigSchema = z.object({
   auto: z.boolean().default(true),
-  action: z.enum(["send-to-agent", "notify", "auto-merge"]).default("notify"),
+  action: z
+    .enum(["send-to-agent", "notify", "auto-merge", "security-scan", "review-pass"])
+    .default("notify"),
   message: z.string().optional(),
+  model: z.string().optional(),
   priority: z.enum(["urgent", "action", "warning", "info"]).optional(),
   retries: z.number().optional(),
   escalateAfter: z.union([z.number(), z.string()]).optional(),
@@ -170,6 +173,12 @@ const ProjectConfigSchema = z.object({
     .optional(),
   opencodeIssueSessionStrategy: z.enum(["reuse", "delete", "ignore"]).optional(),
   decomposer: DecomposerConfigSchema.optional(),
+  qualityGates: z
+    .object({
+      reviewerPrompt: z.string().optional(),
+      reviewModel: z.string().optional(),
+    })
+    .optional(),
 });
 
 const DefaultPluginsSchema = z.object({
@@ -371,6 +380,14 @@ function applyDefaultReactions(config: OrchestratorConfig): OrchestratorConfig {
       action: "notify",
       priority: "info",
       includeSummary: true,
+    },
+    "security-scan": {
+      auto: true,
+      action: "security-scan",
+    },
+    "review-pass": {
+      auto: false,
+      action: "review-pass",
     },
   };
 

@@ -175,3 +175,7 @@ export type {
   DetectedProjectInfo,
   GenerateConfigOptions,
 } from "./config-generator.js";
+
+// Quality Gates — security scan and review pass
+export { runSecurityScan } from "./quality-gates.js";
+export type { SecurityScanResult } from "./quality-gates.js";
