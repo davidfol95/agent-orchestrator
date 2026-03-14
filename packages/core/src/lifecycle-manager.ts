@@ -984,6 +984,26 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           await notifyHuman(event, priority);
         }
       }
+
+      // Auto-close the tracker issue when the PR is merged
+      if (newStatus === "merged") {
+        const mergeProject = config.projects[session.projectId];
+        const trackerIssueId = session.issueId;
+
+        if (mergeProject?.tracker && trackerIssueId) {
+          const trackerPlugin = registry.get<Tracker>("tracker", mergeProject.tracker.plugin);
+          if (trackerPlugin?.updateIssue) {
+            try {
+              await trackerPlugin.updateIssue(trackerIssueId, { state: "closed" }, mergeProject);
+            } catch (err) {
+              const reason = err instanceof Error ? err.message : String(err);
+              console.warn(
+                `[lifecycle-manager] Failed to close tracker issue ${trackerIssueId} after merge: ${reason}`,
+              );
+            }
+          }
+        }
+      }
     } else {
       // No transition but track current state
       states.set(session.id, newStatus);

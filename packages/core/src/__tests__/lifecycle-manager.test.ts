@@ -874,6 +874,217 @@ describe("check (single session)", () => {
     expect(lm.getStates().get("app-1")).toBe("merged");
   });
 
+  it("auto-closes tracker issue when PR is merged", async () => {
+    const mockSCM: SCM = {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("merged"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn(),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn(),
+      getPendingComments: vi.fn(),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn(),
+    };
+
+    const mockTracker: Tracker = {
+      name: "mock-tracker",
+      getIssue: vi.fn(),
+      isCompleted: vi.fn(),
+      issueUrl: vi.fn(),
+      branchName: vi.fn(),
+      generatePrompt: vi.fn(),
+      updateIssue: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const configWithTracker = {
+      ...config,
+      projects: {
+        "my-app": {
+          ...config.projects["my-app"]!,
+          tracker: { plugin: "mock-tracker" },
+        },
+      },
+    };
+
+    const registryWithTrackerAndSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker" && name === "mock-tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    const session = makeSession({ status: "approved", pr: makePR(), issueId: "beads-42" });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "approved",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config: configWithTracker,
+      registry: registryWithTrackerAndSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("merged");
+    expect(mockTracker.updateIssue).toHaveBeenCalledWith(
+      "beads-42",
+      { state: "closed" },
+      configWithTracker.projects["my-app"],
+    );
+  });
+
+  it("does not crash when tracker close fails on merge", async () => {
+    const mockSCM: SCM = {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("merged"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn(),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn(),
+      getPendingComments: vi.fn(),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn(),
+    };
+
+    const mockTracker: Tracker = {
+      name: "mock-tracker",
+      getIssue: vi.fn(),
+      isCompleted: vi.fn(),
+      issueUrl: vi.fn(),
+      branchName: vi.fn(),
+      generatePrompt: vi.fn(),
+      updateIssue: vi.fn().mockRejectedValue(new Error("already closed")),
+    };
+
+    const configWithTracker = {
+      ...config,
+      projects: {
+        "my-app": {
+          ...config.projects["my-app"]!,
+          tracker: { plugin: "mock-tracker" },
+        },
+      },
+    };
+
+    const registryWithTrackerAndSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker" && name === "mock-tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    const session = makeSession({ status: "approved", pr: makePR(), issueId: "beads-99" });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "approved",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config: configWithTracker,
+      registry: registryWithTrackerAndSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    // Should not throw even though tracker.updateIssue rejects
+    await expect(lm.check("app-1")).resolves.not.toThrow();
+    expect(lm.getStates().get("app-1")).toBe("merged");
+  });
+
+  it("skips tracker close when session has no issueId", async () => {
+    const mockSCM: SCM = {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("merged"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn(),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn(),
+      getPendingComments: vi.fn(),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn(),
+    };
+
+    const mockTracker: Tracker = {
+      name: "mock-tracker",
+      getIssue: vi.fn(),
+      isCompleted: vi.fn(),
+      issueUrl: vi.fn(),
+      branchName: vi.fn(),
+      generatePrompt: vi.fn(),
+      updateIssue: vi.fn(),
+    };
+
+    const configWithTracker = {
+      ...config,
+      projects: {
+        "my-app": {
+          ...config.projects["my-app"]!,
+          tracker: { plugin: "mock-tracker" },
+        },
+      },
+    };
+
+    const registryWithTrackerAndSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker" && name === "mock-tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    // issueId is null (default from makeSession)
+    const session = makeSession({ status: "approved", pr: makePR() });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "approved",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config: configWithTracker,
+      registry: registryWithTrackerAndSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("merged");
+    expect(mockTracker.updateIssue).not.toHaveBeenCalled();
+  });
+
   it("detects mergeable when approved + CI green", async () => {
     const mockSCM: SCM = {
       name: "mock-scm",
