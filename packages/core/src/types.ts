@@ -843,8 +843,8 @@ export interface ReactionConfig {
   /** Whether this reaction is enabled */
   auto: boolean;
 
-  /** What to do: send message to agent, notify human, auto-merge, run security scan, or run review pass */
-  action: "send-to-agent" | "notify" | "auto-merge" | "security-scan" | "review-pass";
+  /** What to do: send message to agent, notify human, auto-merge, run security scan, run review pass, or close the tracker issue */
+  action: "send-to-agent" | "notify" | "auto-merge" | "security-scan" | "review-pass" | "close-issue";
 
   /** Model to use for AI-driven actions (e.g. review-pass) */
   model?: string;

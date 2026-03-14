@@ -16,6 +16,7 @@ import type {
   Agent,
   SCM,
   Notifier,
+  Tracker,
   ActivityState,
   PRInfo,
 } from "../types.js";
@@ -1401,8 +1402,8 @@ describe("reactions", () => {
       }),
     };
 
-    // merge.completed has "action" priority but NO reaction key mapping,
-    // so it must reach notifyHuman directly
+    // merge.completed maps to "merge-closed" reaction key, but no reaction is
+    // configured here, so it falls through to notifyHuman
     const session = makeSession({ status: "approved", pr: makePR() });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
 
@@ -1426,6 +1427,248 @@ describe("reactions", () => {
     expect(mockNotifier.notify).toHaveBeenCalledWith(
       expect.objectContaining({ type: "merge.completed" }),
     );
+  });
+});
+
+describe("merge-closed reaction (close-issue)", () => {
+  function makeMockSCMMerged(): SCM {
+    return {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("merged"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn(),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn(),
+      getPendingComments: vi.fn(),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn(),
+    };
+  }
+
+  function makeMockTracker(): Tracker {
+    return {
+      name: "mock-tracker",
+      getIssue: vi.fn(),
+      isCompleted: vi.fn().mockResolvedValue(false),
+      issueUrl: vi.fn().mockReturnValue("https://example.com/issue/1"),
+      branchName: vi.fn().mockReturnValue("feat/issue-1"),
+      generatePrompt: vi.fn().mockResolvedValue("Prompt"),
+      updateIssue: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  it("calls tracker.updateIssue with state=closed when PR merges and session has issueId", async () => {
+    const mockSCM = makeMockSCMMerged();
+    const mockTracker = makeMockTracker();
+
+    const registryWithTrackerAndSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker" && name === "mock-tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    const configWithTracker: OrchestratorConfig = {
+      ...config,
+      projects: {
+        "my-app": {
+          ...config.projects["my-app"],
+          tracker: { plugin: "mock-tracker" },
+        },
+      },
+      reactions: {
+        "merge-closed": {
+          auto: true,
+          action: "close-issue",
+        },
+      },
+    };
+
+    const session = makeSession({ status: "approved", pr: makePR(), issueId: "APP-42" });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "approved",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config: configWithTracker,
+      registry: registryWithTrackerAndSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("merged");
+    expect(mockTracker.updateIssue).toHaveBeenCalledWith(
+      "APP-42",
+      { state: "closed" },
+      expect.objectContaining({ tracker: { plugin: "mock-tracker" } }),
+    );
+  });
+
+  it("skips close-issue when session has no issueId", async () => {
+    const mockSCM = makeMockSCMMerged();
+    const mockTracker = makeMockTracker();
+
+    const registryWithTrackerAndSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker" && name === "mock-tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    const configWithTracker: OrchestratorConfig = {
+      ...config,
+      projects: {
+        "my-app": {
+          ...config.projects["my-app"],
+          tracker: { plugin: "mock-tracker" },
+        },
+      },
+      reactions: {
+        "merge-closed": {
+          auto: true,
+          action: "close-issue",
+        },
+      },
+    };
+
+    // Session has NO issueId
+    const session = makeSession({ status: "approved", pr: makePR(), issueId: null });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "approved",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config: configWithTracker,
+      registry: registryWithTrackerAndSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("merged");
+    expect(mockTracker.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it("skips close-issue when no tracker is configured for the project", async () => {
+    const mockSCM = makeMockSCMMerged();
+    const mockTracker = makeMockTracker();
+
+    const registryWithSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        return null;
+      }),
+    };
+
+    // No tracker in project config
+    const configWithoutTracker: OrchestratorConfig = {
+      ...config,
+      reactions: {
+        "merge-closed": {
+          auto: true,
+          action: "close-issue",
+        },
+      },
+    };
+
+    const session = makeSession({ status: "approved", pr: makePR(), issueId: "APP-42" });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "approved",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config: configWithoutTracker,
+      registry: registryWithSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    await lm.check("app-1");
+
+    expect(lm.getStates().get("app-1")).toBe("merged");
+    expect(mockTracker.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it("handles tracker.updateIssue failure gracefully (does not throw)", async () => {
+    const mockSCM = makeMockSCMMerged();
+    const mockTracker = makeMockTracker();
+    vi.mocked(mockTracker.updateIssue!).mockRejectedValue(new Error("tracker unavailable"));
+
+    const registryWithTrackerAndSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string, name: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker" && name === "mock-tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    const configWithTracker: OrchestratorConfig = {
+      ...config,
+      projects: {
+        "my-app": {
+          ...config.projects["my-app"],
+          tracker: { plugin: "mock-tracker" },
+        },
+      },
+      reactions: {
+        "merge-closed": {
+          auto: true,
+          action: "close-issue",
+        },
+      },
+    };
+
+    const session = makeSession({ status: "approved", pr: makePR(), issueId: "APP-42" });
+    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "approved",
+      project: "my-app",
+    });
+
+    const lm = createLifecycleManager({
+      config: configWithTracker,
+      registry: registryWithTrackerAndSCM,
+      sessionManager: mockSessionManager,
+    });
+
+    // Should not throw even though tracker.updateIssue rejects
+    await expect(lm.check("app-1")).resolves.toBeUndefined();
+    expect(lm.getStates().get("app-1")).toBe("merged");
   });
 });
 

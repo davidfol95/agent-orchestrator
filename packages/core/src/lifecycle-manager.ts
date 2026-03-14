@@ -34,6 +34,7 @@ import {
   type Session,
   type EventPriority,
   type ProjectConfig as _ProjectConfig,
+  type Tracker,
 } from "./types.js";
 import { updateMetadata } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
@@ -152,6 +153,8 @@ function eventToReactionKey(eventType: EventType): string | null {
       return "merge-conflicts";
     case "merge.ready":
       return "approved-and-green";
+    case "merge.completed":
+      return "merge-closed";
     case "session.stuck":
       return "agent-stuck";
     case "session.needs_input":
@@ -487,6 +490,56 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           action: "auto-merge",
           escalated: false,
         };
+      }
+
+      case "close-issue": {
+        // Close the tracker issue associated with this session
+        const closeSession = await sessionManager.get(sessionId);
+        if (!closeSession?.issueId) {
+          return {
+            reactionType: reactionKey,
+            success: false,
+            action: "close-issue",
+            escalated: false,
+          };
+        }
+
+        const closeProject = config.projects[projectId];
+        if (!closeProject?.tracker) {
+          return {
+            reactionType: reactionKey,
+            success: false,
+            action: "close-issue",
+            escalated: false,
+          };
+        }
+
+        const tracker = registry.get<Tracker>("tracker", closeProject.tracker.plugin);
+        if (!tracker?.updateIssue) {
+          return {
+            reactionType: reactionKey,
+            success: false,
+            action: "close-issue",
+            escalated: false,
+          };
+        }
+
+        try {
+          await tracker.updateIssue(closeSession.issueId, { state: "closed" }, closeProject);
+          return {
+            reactionType: reactionKey,
+            success: true,
+            action: "close-issue",
+            escalated: false,
+          };
+        } catch {
+          return {
+            reactionType: reactionKey,
+            success: false,
+            action: "close-issue",
+            escalated: false,
+          };
+        }
       }
 
       case "security-scan": {
