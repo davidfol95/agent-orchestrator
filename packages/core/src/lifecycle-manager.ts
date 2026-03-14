@@ -189,6 +189,12 @@ export interface LifecycleManagerDeps {
   sessionManager: SessionManager;
   /** When set, only poll sessions belonging to this project. */
   projectId?: string;
+  /**
+   * When true, automatically kill the session (tmux, worktree, branch) after
+   * merge detection. Defaults to false. Enabled by the lifecycle-worker (ao start
+   * poll loop); ad-hoc spawn usage leaves cleanup to `ao session cleanup`.
+   */
+  autoCleanupOnMerge?: boolean;
 }
 
 /** Track attempt counts for reactions per session. */
@@ -199,7 +205,7 @@ interface ReactionTracker {
 
 /** Create a LifecycleManager instance. */
 export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleManager {
-  const { config, registry, sessionManager, projectId: scopedProjectId } = deps;
+  const { config, registry, sessionManager, projectId: scopedProjectId, autoCleanupOnMerge = false } = deps;
   const observer = createProjectObserver(config, "lifecycle-manager");
 
   const states = new Map<SessionId, SessionStatus>();
@@ -1001,6 +1007,24 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
                 `[lifecycle-manager] Failed to close tracker issue ${trackerIssueId} after merge: ${reason}`,
               );
             }
+          }
+        }
+
+        // Auto-cleanup: kill tmux session, remove worktree, delete local branch.
+        // Only runs when autoCleanupOnMerge is enabled (i.e., the ao start poll loop).
+        // Skips orchestrator sessions — they are managed by `ao stop`, not the poll loop.
+        if (
+          autoCleanupOnMerge &&
+          session.metadata["role"] !== "orchestrator" &&
+          !session.id.endsWith("-orchestrator")
+        ) {
+          try {
+            await sessionManager.kill(session.id);
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            console.warn(
+              `[lifecycle-manager] Failed to cleanup session ${session.id} after merge: ${reason}`,
+            );
           }
         }
       }
