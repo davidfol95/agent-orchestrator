@@ -180,6 +180,79 @@ describe("runSecurityScan", () => {
     expect(result.clean).toBe(true);
     expect(result.findings[0]).toContain("git diff failed");
   });
+
+  it("detects PEM private key headers", async () => {
+    mockGitDiff("+-----BEGIN RSA PRIVATE KEY-----\n");
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.clean).toBe(false);
+    expect(result.findings[0]).toContain("Potential secret detected");
+  });
+
+  it("detects EC private key headers", async () => {
+    mockGitDiff("+-----BEGIN EC PRIVATE KEY-----\n");
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.clean).toBe(false);
+  });
+
+  it("detects generic private key headers", async () => {
+    mockGitDiff("+-----BEGIN PRIVATE KEY-----\n");
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.clean).toBe(false);
+  });
+
+  it("detects OpenAI sk- tokens", async () => {
+    mockGitDiff("+const openaiKey = 'sk-abcdefghijklmnopqrstuvwxyz123456789012345';\n");
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.clean).toBe(false);
+    expect(result.findings[0]).toContain("Potential secret detected");
+  });
+
+  it("detects GitHub ghp_ tokens", async () => {
+    mockGitDiff("+const token = 'ghp_abcdefghijklmnopqrstuvwxyz123456789012';\n"); // gitleaks:allow
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.clean).toBe(false);
+    expect(result.findings[0]).toContain("Potential secret detected");
+  });
+
+  it("detects GitLab glpat- tokens", async () => {
+    mockGitDiff("+const glToken = 'glpat-abc123def456ghi789jkl0';\n"); // gitleaks:allow
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.clean).toBe(false);
+    expect(result.findings[0]).toContain("Potential secret detected");
+  });
+
+  it("detects Slack xox tokens", async () => {
+    mockGitDiff("+const slackToken = 'xoxb-12345-67890-abcdefghijklmnop';\n"); // gitleaks:allow
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.clean).toBe(false);
+    expect(result.findings[0]).toContain("Potential secret detected");
+  });
+
+  it("detects api_key assignments", async () => {
+    mockGitDiff('+const api_key = "abc123secretvalue";\n');
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.clean).toBe(false);
+    expect(result.findings[0]).toContain("Potential secret detected");
+  });
+
+  it("does not flag password mentioned in a comment", async () => {
+    mockGitDiff("+// Note: never hardcode a password here\n");
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.clean).toBe(true);
+  });
+
+  it("flags only one finding per line even when multiple patterns match", async () => {
+    // Line matches both AKIA pattern and could match api_key pattern
+    mockGitDiff("+const key = 'AKIAIOSFODNN7EXAMPLE'; // api_key='AKIAIOSFODNN7EXAMPLE'\n");
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.findings).toHaveLength(1);
+  });
+
+  it("findings contain enough context to identify the problematic line", async () => {
+    mockGitDiff("+const awsKey = 'AKIAIOSFODNN7EXAMPLE';\n");
+    const result = await runSecurityScan("/tmp/ws", "main");
+    expect(result.findings[0]).toContain("AKIAIOSFODNN7EXAMPLE");
+  });
 });
 
 // =============================================================================
