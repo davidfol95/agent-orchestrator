@@ -1676,6 +1676,14 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
             if (prState === PR_STATE.MERGED || prState === PR_STATE.CLOSED) {
               shouldKill = true;
             }
+            // Fallback: close the tracker issue if the lifecycle manager missed the merge event
+            if (prState === PR_STATE.MERGED && !options?.dryRun && session.issueId && plugins.tracker?.updateIssue) {
+              try {
+                await plugins.tracker.updateIssue(session.issueId, { state: "closed" }, project);
+              } catch {
+                // Best-effort — don't block cleanup if tracker close fails
+              }
+            }
           } catch {
             // Can't check PR — skip
           }

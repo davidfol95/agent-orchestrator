@@ -1988,6 +1988,173 @@ describe("cleanup", () => {
     expect(result.skipped).toHaveLength(0);
   });
 
+  it("closes tracker issue when PR is merged (fallback for missed lifecycle event)", async () => {
+    const mockUpdateIssue = vi.fn().mockResolvedValue(undefined);
+    const mockTracker: Tracker = {
+      name: "mock-tracker",
+      getIssue: vi.fn(),
+      isCompleted: vi.fn().mockResolvedValue(false),
+      issueUrl: vi.fn().mockReturnValue(""),
+      branchName: vi.fn().mockReturnValue("feat/ISSUE-1"),
+      generatePrompt: vi.fn().mockResolvedValue(""),
+      updateIssue: mockUpdateIssue,
+    };
+
+    const mockSCM: SCM = {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("merged"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn(),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn(),
+      getPendingComments: vi.fn(),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn(),
+    };
+
+    const registryWithTrackerAndSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return mockWorkspace;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-1", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "pr_open",
+      project: "my-app",
+      issue: "ISSUE-1",
+      pr: "https://github.com/org/repo/pull/10",
+      runtimeHandle: JSON.stringify(makeHandle("rt-1")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithTrackerAndSCM });
+    const result = await sm.cleanup();
+
+    expect(result.killed).toContain("app-1");
+    expect(mockUpdateIssue).toHaveBeenCalledWith("ISSUE-1", { state: "closed" }, expect.anything());
+  });
+
+  it("does not close tracker issue when PR is closed (not merged)", async () => {
+    const mockUpdateIssue = vi.fn().mockResolvedValue(undefined);
+    const mockTracker: Tracker = {
+      name: "mock-tracker",
+      getIssue: vi.fn(),
+      isCompleted: vi.fn().mockResolvedValue(false),
+      issueUrl: vi.fn().mockReturnValue(""),
+      branchName: vi.fn().mockReturnValue("feat/ISSUE-2"),
+      generatePrompt: vi.fn().mockResolvedValue(""),
+      updateIssue: mockUpdateIssue,
+    };
+
+    const mockSCM: SCM = {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("closed"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn(),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn(),
+      getPendingComments: vi.fn(),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn(),
+    };
+
+    const registryWithTrackerAndSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return mockWorkspace;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-2", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "pr_open",
+      project: "my-app",
+      issue: "ISSUE-2",
+      pr: "https://github.com/org/repo/pull/11",
+      runtimeHandle: JSON.stringify(makeHandle("rt-2")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithTrackerAndSCM });
+    const result = await sm.cleanup();
+
+    expect(result.killed).toContain("app-2");
+    expect(mockUpdateIssue).not.toHaveBeenCalled();
+  });
+
+  it("does not close tracker issue during cleanup dry-run", async () => {
+    const mockUpdateIssue = vi.fn().mockResolvedValue(undefined);
+    const mockTracker: Tracker = {
+      name: "mock-tracker",
+      getIssue: vi.fn(),
+      isCompleted: vi.fn().mockResolvedValue(false),
+      issueUrl: vi.fn().mockReturnValue(""),
+      branchName: vi.fn().mockReturnValue("feat/ISSUE-3"),
+      generatePrompt: vi.fn().mockResolvedValue(""),
+      updateIssue: mockUpdateIssue,
+    };
+
+    const mockSCM: SCM = {
+      name: "mock-scm",
+      detectPR: vi.fn(),
+      getPRState: vi.fn().mockResolvedValue("merged"),
+      mergePR: vi.fn(),
+      closePR: vi.fn(),
+      getCIChecks: vi.fn(),
+      getCISummary: vi.fn(),
+      getReviews: vi.fn(),
+      getReviewDecision: vi.fn(),
+      getPendingComments: vi.fn(),
+      getAutomatedComments: vi.fn(),
+      getMergeability: vi.fn(),
+    };
+
+    const registryWithTrackerAndSCM: PluginRegistry = {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "workspace") return mockWorkspace;
+        if (slot === "scm") return mockSCM;
+        if (slot === "tracker") return mockTracker;
+        return null;
+      }),
+    };
+
+    writeMetadata(sessionsDir, "app-3", {
+      worktree: "/tmp",
+      branch: "main",
+      status: "pr_open",
+      project: "my-app",
+      issue: "ISSUE-3",
+      pr: "https://github.com/org/repo/pull/12",
+      runtimeHandle: JSON.stringify(makeHandle("rt-3")),
+    });
+
+    const sm = createSessionManager({ config, registry: registryWithTrackerAndSCM });
+    await sm.cleanup(undefined, { dryRun: true });
+
+    expect(mockUpdateIssue).not.toHaveBeenCalled();
+  });
+
   it("deletes mapped OpenCode session during cleanup", async () => {
     const deleteLogPath = join(tmpDir, "opencode-delete.log");
     const mockBin = installMockOpencode("[]", deleteLogPath);
