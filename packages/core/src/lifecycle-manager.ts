@@ -11,6 +11,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   SESSION_STATUS,
   PR_STATE,
@@ -37,6 +39,9 @@ import { updateMetadata } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
 import { createCorrelationId, createProjectObserver } from "./observability.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
+import { runSecurityScan, runReviewPass } from "./quality-gates.js";
+
+const execFileAsync = promisify(execFile);
 
 /** Parse a duration string like "10m", "30s", "1h" to milliseconds. */
 function parseDuration(str: string): number {
@@ -135,6 +140,8 @@ function statusToEventType(_from: SessionStatus | undefined, to: SessionStatus):
 /** Map event type to reaction config key. */
 function eventToReactionKey(eventType: EventType): string | null {
   switch (eventType) {
+    case "pr.created":
+      return "security-scan";
     case "ci.failing":
       return "ci-failed";
     case "review.changes_requested":
@@ -478,6 +485,147 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           reactionType: reactionKey,
           success: true,
           action: "auto-merge",
+          escalated: false,
+        };
+      }
+
+      case "security-scan": {
+        // Fetch the session to access workspacePath and metadata
+        const scanSession = await sessionManager.get(sessionId);
+        if (!scanSession || !scanSession.workspacePath) {
+          return {
+            reactionType: reactionKey,
+            success: false,
+            action: "security-scan",
+            escalated: false,
+          };
+        }
+
+        const scanProject = config.projects[projectId];
+        if (!scanProject) {
+          return {
+            reactionType: reactionKey,
+            success: false,
+            action: "security-scan",
+            escalated: false,
+          };
+        }
+
+        // Skip if gates already running for this session
+        if (scanSession.metadata["qualityGateStatus"] === "running") {
+          return {
+            reactionType: reactionKey,
+            success: true,
+            action: "security-scan",
+            escalated: false,
+          };
+        }
+
+        // Skip if HEAD hasn't changed since last gate run
+        let currentHead: string;
+        try {
+          const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+            cwd: scanSession.workspacePath,
+          });
+          currentHead = stdout.trim();
+        } catch {
+          return {
+            reactionType: reactionKey,
+            success: false,
+            action: "security-scan",
+            escalated: false,
+          };
+        }
+
+        const lastGateCommit = scanSession.metadata["lastQualityGateCommit"] ?? "";
+        if (lastGateCommit === currentHead) {
+          return {
+            reactionType: reactionKey,
+            success: true,
+            action: "security-scan",
+            escalated: false,
+          };
+        }
+
+        // Mark as running before launching detached Promise
+        const scanSessionsDir = getSessionsDir(config.configPath, scanProject.path);
+        updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "running" });
+
+        // Run gates asynchronously — detached so polling loop is not blocked
+        const workspacePath = scanSession.workspacePath;
+        const baseBranch = scanProject.defaultBranch ?? "main";
+        const qgConfig = scanProject.qualityGates;
+
+        void (async () => {
+          try {
+            // Step 1: Security scan
+            const scanResult = await runSecurityScan(workspacePath, baseBranch);
+            if (!scanResult.clean) {
+              const findingsList = scanResult.findings.join("\n");
+              const secMessage = `Security scan found potential issues in this PR. Please review and fix before merging.\n\nFindings:\n${findingsList}`;
+              try {
+                await sessionManager.send(sessionId, secMessage);
+              } catch {
+                // Best-effort send
+              }
+              updateMetadata(scanSessionsDir, scanSession.id, {
+                qualityGateStatus: "failed",
+                lastQualityGateCommit: currentHead,
+              });
+              return;
+            }
+
+            // Step 2: Review pass (only if configured)
+            if (qgConfig?.reviewerPrompt && qgConfig?.reviewModel) {
+              const reviewResult = await runReviewPass(
+                workspacePath,
+                baseBranch,
+                qgConfig.reviewModel,
+                qgConfig.reviewerPrompt,
+              );
+
+              if (reviewResult.securityConcerns) {
+                // BLOCK: security concerns found in review
+                const blockMessage = `Security review identified concerns that BLOCK this PR from merging. Please address the following:\n\n${reviewResult.feedback}`;
+                try {
+                  await sessionManager.send(sessionId, blockMessage);
+                } catch {
+                  // Best-effort send
+                }
+                updateMetadata(scanSessionsDir, scanSession.id, {
+                  qualityGateStatus: "failed",
+                  lastQualityGateCommit: currentHead,
+                });
+                return;
+              }
+
+              if (!reviewResult.clean) {
+                // Non-blocking feedback — agent can iterate
+                const feedbackMessage = `Code review feedback (non-blocking):\n\n${reviewResult.feedback}`;
+                try {
+                  await sessionManager.send(sessionId, feedbackMessage);
+                } catch {
+                  // Best-effort send
+                }
+              }
+            }
+
+            // All gates passed — update commit marker and clear status
+            updateMetadata(scanSessionsDir, scanSession.id, {
+              qualityGateStatus: "",
+              lastQualityGateCommit: currentHead,
+            });
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            console.warn(`[lifecycle-manager] Quality gate error for ${sessionId}: ${reason}`);
+            updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "" });
+          }
+        })();
+
+        return {
+          reactionType: reactionKey,
+          success: true,
+          action: "security-scan",
           escalated: false,
         };
       }
