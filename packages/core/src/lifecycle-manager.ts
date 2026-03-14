@@ -33,6 +33,7 @@ import {
   type Notifier,
   type Session,
   type EventPriority,
+  type MergeMethod,
   type ProjectConfig as _ProjectConfig,
   type Tracker,
 } from "./types.js";
@@ -988,6 +989,25 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             data: { oldStatus, newStatus },
           });
           await notifyHuman(event, priority);
+        }
+      }
+
+      // Enable GitHub auto-merge when a PR is first opened.
+      // This lets GitHub merge automatically once all required conditions are met
+      // (CI passing, reviews approved, etc.) without manual intervention.
+      if (newStatus === "pr_open" && session.pr) {
+        const autoMergeProject = config.projects[session.projectId];
+        const autoMergeScm = autoMergeProject?.scm
+          ? registry.get<SCM>("scm", autoMergeProject.scm.plugin)
+          : null;
+        const mergeMethod = (autoMergeProject?.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
+        if (autoMergeScm?.enableAutoMerge) {
+          void autoMergeScm.enableAutoMerge(session.pr, mergeMethod).catch((err: unknown) => {
+            const reason = err instanceof Error ? err.message : String(err);
+            console.warn(
+              `[lifecycle-manager] Failed to enable auto-merge for ${session.id}: ${reason}`,
+            );
+          });
         }
       }
 

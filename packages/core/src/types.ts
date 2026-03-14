@@ -563,6 +563,13 @@ export interface SCM {
   /** Merge a PR */
   mergePR(pr: PRInfo, method?: MergeMethod): Promise<void>;
 
+  /**
+   * Enable GitHub's native auto-merge on a PR.
+   * GitHub will merge automatically once all required conditions are satisfied
+   * (CI passing, reviews approved, etc.). If no checks are required, merges immediately.
+   */
+  enableAutoMerge?(pr: PRInfo, method?: MergeMethod): Promise<void>;
+
   /** Close a PR without merging */
   closePR(pr: PRInfo): Promise<void>;
 

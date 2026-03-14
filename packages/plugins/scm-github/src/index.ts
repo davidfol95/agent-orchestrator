@@ -634,6 +634,11 @@ function createGitHubSCM(): SCM {
       await gh(["pr", "merge", String(pr.number), "--repo", repoFlag(pr), flag, "--delete-branch"]);
     },
 
+    async enableAutoMerge(pr: PRInfo, method: MergeMethod = "squash"): Promise<void> {
+      const flag = method === "rebase" ? "--rebase" : method === "merge" ? "--merge" : "--squash";
+      await gh(["pr", "merge", String(pr.number), "--repo", repoFlag(pr), flag, "--auto"]);
+    },
+
     async closePR(pr: PRInfo): Promise<void> {
       await gh(["pr", "close", String(pr.number), "--repo", repoFlag(pr)]);
     },
