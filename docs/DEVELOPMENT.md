@@ -1,3 +1,5 @@
+Last verified: 2026-03-14
+
 # Development Guide
 
 Architecture overview, code conventions, and patterns for contributors and AI agents working on this codebase.
@@ -25,7 +27,7 @@ Every abstraction is a swappable plugin. All interfaces are defined in [`package
 | Runtime   | `Runtime`   | `tmux`        | `process`, `docker`, `k8s`, `ssh`, `e2b` |
 | Agent     | `Agent`     | `claude-code` | `codex`, `aider`, `opencode`             |
 | Workspace | `Workspace` | `worktree`    | `clone`                                  |
-| Tracker   | `Tracker`   | `github`      | `linear`                                 |
+| Tracker   | `Tracker`   | `github`      | `linear`, `beads`                        |
 | SCM       | `SCM`       | `github`      | —                                        |
 | Notifier  | `Notifier`  | `desktop`     | `slack`, `webhook`, `composio`           |
 | Terminal  | `Terminal`  | `iterm2`      | `web`                                    |
@@ -52,10 +54,16 @@ This means:
 ```
 spawning → working → pr_open → ci_failed
                              → review_pending → changes_requested
-                             → approved → mergeable → merged
-                                                    ↓
+                             → approved → [quality gates] → mergeable → merged
+                                                                          ↓
+                                                              auto-cleanup (kill session,
+                                                              close tracker issue,
+                                                              remove worktree)
+                             → stuck (idle beyond threshold)
                              cleanup → done (or killed/terminated)
 ```
+
+When a PR is created, the lifecycle manager runs **quality gates** (secret scanning + Claude code review) before enabling auto-merge. If the `approved-and-green` reaction has `auto: true`, GitHub auto-merge is enabled once quality gates pass. When a PR is merged, the lifecycle manager auto-closes the tracker issue and (when `autoCleanupOnMerge` is enabled by `ao start`) kills the runtime session, removes the worktree, and deletes the local branch. Orchestrator sessions are protected from auto-cleanup.
 
 Activity states (orthogonal to lifecycle): `active`, `ready`, `idle`, `waiting_input`, `blocked`, `exited`.
 
@@ -68,6 +76,7 @@ Activity states (orthogonal to lifecycle): `active`, `ready`, `idle`, `waiting_i
 | `packages/core/src/prompt-builder.ts`    | 3-layer prompt assembly (base + config + rules) |
 | `packages/core/src/config.ts`            | Config loading and Zod validation               |
 | `packages/core/src/plugin-registry.ts`   | Plugin discovery, loading, resolution           |
+| `packages/core/src/quality-gates.ts`     | Security scanning, Claude code review, pre-merge gates |
 | `packages/core/src/agent-selection.ts`   | Resolves worker vs orchestrator agent roles     |
 | `packages/core/src/observability.ts`     | Correlation IDs, structured logging, metrics    |
 | `packages/core/src/paths.ts`             | Hash-based path and session name generation     |
@@ -109,7 +118,7 @@ agent-orchestrator/
 │   │   ├── runtime-*/     # Runtime plugins (tmux, docker, k8s)
 │   │   ├── agent-*/       # Agent adapters (claude-code, codex, aider)
 │   │   ├── workspace-*/   # Workspace providers (worktree, clone)
-│   │   ├── tracker-*/     # Issue trackers (github, linear)
+│   │   ├── tracker-*/     # Issue trackers (github, linear, beads)
 │   │   ├── scm-github/    # SCM adapter
 │   │   ├── notifier-*/    # Notification channels
 │   │   └── terminal-*/    # Terminal UIs
@@ -331,8 +340,15 @@ Key test files in core (`src/__tests__/`):
 
 - `session-manager.test.ts` — session CRUD and spawn flow
 - `lifecycle-manager.test.ts` — state machine and reactions
+- `quality-gates.test.ts` — security scanning and review pass gates
 - `plugin-registry.test.ts` — plugin loading and resolution
 - `prompt-builder.test.ts` — prompt generation
+
+Plugin-level tests:
+
+- `packages/plugins/tracker-beads/test/index.test.ts` — beads tracker unit tests
+- `packages/cli/__tests__/commands/spawn-ready.test.ts` — spawn-ready command tests
+- `packages/integration-tests/src/tracker-beads.integration.test.ts` — beads integration tests
 
 Use mock plugins in tests — don't call real tmux or external services in unit tests.
 
@@ -358,11 +374,32 @@ Use mock plugins in tests — don't call real tmux or external services in unit 
 2. Emit it via `eventEmitter.emit()` in the relevant service
 3. Handle it in `lifecycle-manager.ts` if it should trigger a reaction
 
+### Add a quality gate
+
+Quality gates run automatically when a PR is created (via the `security-scan` reaction). To add a new check:
+
+1. Add your gate function in `packages/core/src/quality-gates.ts`
+2. Wire it into `runAllQualityGates()` — it runs alongside the existing security scan and review passes
+3. Return a result that includes `clean: boolean` and any findings/feedback
+4. The lifecycle manager sends feedback to the agent and blocks auto-merge if the gate fails
+
+Per-project quality gate config lives under `qualityGates` in the project config:
+
+```yaml
+projects:
+  my-app:
+    qualityGates:
+      reviewerPrompt: "path/to/custom-reviewer.md"
+      securityReviewerPrompt: "path/to/custom-security-reviewer.md"
+      reviewModel: "claude-opus-4-6"
+```
+
 ### Add a new CLI command
 
-1. Add the command in `packages/cli/src/index.ts` using `commander`
-2. Import from core services as needed
-3. Update the CLI reference in `README.md`
+1. Add the command file in `packages/cli/src/commands/` (see `spawn-ready.ts` for an example)
+2. Register it in `packages/cli/src/index.ts` using `commander`
+3. Import from core services as needed
+4. Update the CLI reference in `README.md`
 
 ### Debug a session
 
