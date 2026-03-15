@@ -2398,36 +2398,6 @@ describe("quality gates + auto-merge race condition", () => {
     expect(enableAutoMerge).toHaveBeenCalledWith(session.pr, "squash");
   });
 
-  it("calls enableAutoMerge after quality gates pass", async () => {
-    const enableAutoMerge = vi.fn().mockResolvedValue(undefined);
-    const mockSCM = makePrOpenSCMForGates({ enableAutoMerge });
-
-    const configWithGates = makeConfigWithQualityGates();
-
-    const session = makeSession({ status: "working", pr: makePR(), workspacePath: "/tmp/ws" });
-    vi.mocked(mockSessionManager.get).mockResolvedValue(session);
-
-    writeMetadata(sessionsDir, "app-1", {
-      worktree: "/tmp/ws",
-      branch: "main",
-      status: "working",
-      project: "my-app",
-    });
-
-    const lm = createLifecycleManager({
-      config: configWithGates,
-      registry: makeRegistryWithSCMForGates(mockSCM),
-      sessionManager: mockSessionManager,
-    });
-
-    await lm.check("app-1");
-
-    // Let the detached async block (quality gates + auto-merge) settle
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-    expect(enableAutoMerge).toHaveBeenCalledWith(session.pr, "squash");
-  });
-
   it("does NOT call enableAutoMerge when quality gates fail", async () => {
     vi.mocked(runAllQualityGates).mockResolvedValue({
       passed: false,

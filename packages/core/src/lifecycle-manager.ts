@@ -612,12 +612,11 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "running" });
 
         // Capture SCM plugin now (before async detach) so auto-merge can fire after gates pass
-        const gateAutoMergeProject = scanProject;
-        const gateScm = gateAutoMergeProject.scm
-          ? registry.get<SCM>("scm", gateAutoMergeProject.scm.plugin)
+        const gateScm = scanProject.scm
+          ? registry.get<SCM>("scm", scanProject.scm.plugin)
           : null;
         const gateMergeMethod =
-          (gateAutoMergeProject.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
+          (scanProject.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
         const gatePr = scanSession.pr;
 
         // Run gates asynchronously — detached so polling loop is not blocked
