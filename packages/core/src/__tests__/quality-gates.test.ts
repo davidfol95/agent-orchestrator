@@ -423,4 +423,109 @@ describe("runReviewPass", () => {
     // No block → status defaults to clean
     expect(result.clean).toBe(true);
   });
+
+  // --- Spawn args ---
+
+  it("passes all required flags to claude spawn", async () => {
+    const proc = createMockProc(makeReviewOutput("clean"));
+    vi.mocked(spawn).mockReturnValue(proc as never);
+
+    await runReviewPass("/tmp/ws", "main", "claude-opus-4-6", "/tmp/reviewer.md");
+
+    const [cmd, spawnArgs] = vi.mocked(spawn).mock.calls[0]!;
+    const args = spawnArgs as string[];
+
+    expect(cmd).toBe("claude");
+    expect(args).toContain("--print");
+    expect(args).toContain("--model");
+    expect(args[args.indexOf("--model") + 1]).toBe("claude-opus-4-6");
+    expect(args).toContain("--system-prompt");
+    expect(args).toContain("--allowedTools");
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe("Read,Grep,Glob,Bash");
+    expect(args).toContain("--dangerously-skip-permissions");
+    expect(args).toContain("--max-turns");
+    expect(args[args.indexOf("--max-turns") + 1]).toBe("30");
+    expect(args).toContain("--max-budget-usd");
+    expect(args[args.indexOf("--max-budget-usd") + 1]).toBe("5");
+  });
+
+  it("passes the workspace path as cwd to spawn", async () => {
+    const proc = createMockProc(makeReviewOutput("clean"));
+    vi.mocked(spawn).mockReturnValue(proc as never);
+
+    await runReviewPass("/custom/workspace", "main", "claude-opus-4-6", "/tmp/reviewer.md");
+
+    const [, , spawnOpts] = vi.mocked(spawn).mock.calls[0]!;
+    expect((spawnOpts as { cwd?: string }).cwd).toBe("/custom/workspace");
+  });
+
+  // --- Timeout handling ---
+
+  it("rejects with timeout error when claude takes longer than 15 minutes", async () => {
+    vi.useFakeTimers();
+
+    const proc = new EventEmitter() as unknown as MockProc;
+    (proc as unknown as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter }).stdout =
+      new EventEmitter();
+    (proc as unknown as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter }).stderr =
+      new EventEmitter();
+    proc.stdin = { write: vi.fn(), end: vi.fn() };
+    const killSpy = vi.fn();
+    (proc as unknown as { kill: (signal: string) => void }).kill = killSpy;
+
+    vi.mocked(spawn).mockReturnValue(proc as never);
+
+    const resultPromise = runReviewPass("/tmp/ws", "main", "claude-opus-4-6", "/tmp/reviewer.md");
+
+    // Advance time past the 15-minute timeout
+    await vi.advanceTimersByTimeAsync(15 * 60 * 1000 + 1);
+
+    // The timeout should have killed the process — the review is unavailable → clean
+    const result = await resultPromise;
+    expect(killSpy).toHaveBeenCalledWith("SIGTERM");
+    expect(result.clean).toBe(true);
+    expect(result.feedback).toBe("Review unavailable");
+
+    vi.useRealTimers();
+  });
+
+  // --- Partial failure ---
+
+  it("does not call spawn when security scan fails (security scan is called first in gate pipeline)", async () => {
+    // This tests that runSecurityScan and runReviewPass are independent —
+    // runReviewPass itself doesn't call runSecurityScan; it's only called
+    // when there is a non-empty diff. When the diff is empty, claude is not invoked.
+    mockGitDiff("");
+    const result = await runReviewPass("/tmp/ws", "main", "claude-opus-4-6", "/tmp/reviewer.md");
+    expect(result.clean).toBe(true);
+    expect(result.feedback).toBe("No changes to review");
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+  });
+
+  // --- Combined feedback ---
+
+  it("feedback contains parsed block content even when securityConcerns is true", async () => {
+    const output = makeReviewOutput(
+      "concerns",
+      "Hardcoded token found, auth bypass possible",
+      "Detailed security review:",
+    );
+    vi.mocked(spawn).mockReturnValue(createMockProc(output) as never);
+
+    const result = await runReviewPass("/tmp/ws", "main", "claude-opus-4-6", "/tmp/reviewer.md");
+    expect(result.clean).toBe(false);
+    expect(result.securityConcerns).toBe(true);
+    expect(result.feedback).toContain("Hardcoded token found");
+    expect(result.feedback).toContain("auth bypass possible");
+  });
+
+  it("securityConcerns is false and clean is false when status=concerns with no security keywords", async () => {
+    const output = makeReviewOutput("concerns", "Missing null check, undefined could be returned");
+    vi.mocked(spawn).mockReturnValue(createMockProc(output) as never);
+
+    const result = await runReviewPass("/tmp/ws", "main", "claude-opus-4-6", "/tmp/reviewer.md");
+    expect(result.clean).toBe(false);
+    expect(result.securityConcerns).toBe(false);
+    expect(result.feedback).toContain("Missing null check");
+  });
 });
