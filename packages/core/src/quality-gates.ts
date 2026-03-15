@@ -193,6 +193,17 @@ export interface QualityGateResult {
   combinedFeedback: string;
 }
 
+/** Build a feedback section for a review pass result or error. Returns null if neither provided. */
+function buildFeedbackSection(
+  title: string,
+  result: ReviewPassResult | undefined,
+  error: Error | undefined,
+): string | null {
+  if (result) return `## ${title}\n${result.feedback}`;
+  if (error) return `## ${title}\n_Review unavailable: ${error.message}_`;
+  return null;
+}
+
 /** Resolve a prompt path: use provided path, else default, else fall back to FALLBACK_REVIEW_PROMPT inline. */
 function resolvePromptPath(provided: string | undefined, defaultRelativePath: string): string {
   if (provided) {
@@ -265,21 +276,12 @@ export async function runAllQualityGates(config: QualityGateConfig): Promise<Qua
   const passed = !bothErrored && !anySecurityConcerns;
 
   // Step 5: Build combined feedback
-  const sections: string[] = [];
-
-  if (codeReviewResult) {
-    sections.push(`## Code Review\n${codeReviewResult.feedback}`);
-  } else if (codeReviewError) {
-    sections.push(`## Code Review\n_Review unavailable: ${codeReviewError.message}_`);
-  }
-
-  if (securityReviewResult) {
-    sections.push(`## Security Review\n${securityReviewResult.feedback}`);
-  } else if (securityReviewError) {
-    sections.push(`## Security Review\n_Review unavailable: ${securityReviewError.message}_`);
-  }
-
-  const combinedFeedback = sections.join("\n\n");
+  const combinedFeedback = [
+    buildFeedbackSection("Code Review", codeReviewResult, codeReviewError),
+    buildFeedbackSection("Security Review", securityReviewResult, securityReviewError),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   return {
     passed,
