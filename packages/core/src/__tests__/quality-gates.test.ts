@@ -174,10 +174,10 @@ describe("runSecurityScan", () => {
     expect(result.clean).toBe(false);
   });
 
-  it("returns clean with error note when git diff fails", async () => {
+  it("returns not-clean with error note when git diff fails", async () => {
     mockGitDiffError("not a git repository");
     const result = await runSecurityScan("/tmp/ws", "main");
-    expect(result.clean).toBe(true);
+    expect(result.clean).toBe(false);
     expect(result.findings[0]).toContain("git diff failed");
   });
 
@@ -248,10 +248,11 @@ describe("runSecurityScan", () => {
     expect(result.findings).toHaveLength(1);
   });
 
-  it("findings contain enough context to identify the problematic line", async () => {
+  it("findings contain enough context to identify the matching pattern", async () => {
     mockGitDiff("+const awsKey = 'AKIAIOSFODNN7EXAMPLE';\n");
     const result = await runSecurityScan("/tmp/ws", "main");
-    expect(result.findings[0]).toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(result.findings[0]).toContain("Potential secret detected");
+    expect(result.findings[0]).toContain("pattern:");
   });
 });
 
