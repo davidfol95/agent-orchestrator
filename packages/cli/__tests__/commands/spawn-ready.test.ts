@@ -451,4 +451,89 @@ describe("spawn-ready dependency chain", () => {
       ).rejects.toThrow("process.exit(1)");
     });
   });
+
+  /**
+   * Scope filtering: --scope passes --label to bd ready to restrict
+   * which issues are picked up.
+   */
+  describe("scope filtering", () => {
+    it("passes --label to bd ready when --scope is used", async () => {
+      mockExec
+        .mockResolvedValueOnce({ stdout: "tmux 3.3a", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "bd 1.0.0", stderr: "" })
+        .mockResolvedValueOnce({ stdout: readyJson(["RU_Pro-A"]), stderr: "" });
+
+      await program.parseAsync([
+        "node", "test", "spawn-ready", "ru-pro", "--scope", "quality-gates", "--dry-run",
+      ]);
+
+      // Find the bd ready call (third mockExec call, index 2)
+      const bdReadyCall = mockExec.mock.calls[2];
+      expect(bdReadyCall[0]).toBe("bd");
+      expect(bdReadyCall[1]).toContain("--label");
+      expect(bdReadyCall[1]).toContain("quality-gates");
+    });
+
+    it("omits --label from bd ready when --scope is not used", async () => {
+      mockExec
+        .mockResolvedValueOnce({ stdout: "tmux 3.3a", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "bd 1.0.0", stderr: "" })
+        .mockResolvedValueOnce({ stdout: readyJson(["RU_Pro-A"]), stderr: "" });
+
+      await program.parseAsync([
+        "node", "test", "spawn-ready", "ru-pro", "--dry-run",
+      ]);
+
+      const bdReadyCall = mockExec.mock.calls[2];
+      expect(bdReadyCall[1]).not.toContain("--label");
+    });
+
+    it("shows scope label in banner output", async () => {
+      mockExec
+        .mockResolvedValueOnce({ stdout: "tmux 3.3a", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "bd 1.0.0", stderr: "" })
+        .mockResolvedValueOnce({ stdout: readyJson(["RU_Pro-A"]), stderr: "" });
+
+      await program.parseAsync([
+        "node", "test", "spawn-ready", "ru-pro", "--scope", "my-scope", "--dry-run",
+      ]);
+
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain("my-scope");
+    });
+
+    it("shows scoped message when no issues found with label", async () => {
+      mockExec
+        .mockResolvedValueOnce({ stdout: "tmux 3.3a", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "bd 1.0.0", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "", stderr: "" }) // empty bd ready
+        .mockResolvedValueOnce({
+          stdout: JSON.stringify([{ label: "quality-gates", count: 5 }]),
+          stderr: "",
+        }); // bd label list-all
+
+      await program.parseAsync([
+        "node", "test", "spawn-ready", "ru-pro", "--scope", "typo-scope", "--dry-run",
+      ]);
+
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toContain('label "typo-scope"');
+      expect(output).toContain("quality-gates");
+    });
+
+    it("shows plain no-results message when not scoped", async () => {
+      mockExec
+        .mockResolvedValueOnce({ stdout: "tmux 3.3a", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "bd 1.0.0", stderr: "" })
+        .mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+      await program.parseAsync([
+        "node", "test", "spawn-ready", "ru-pro", "--dry-run",
+      ]);
+
+      const output = consoleSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(output).toMatch(/no ready issues found\./i);
+      expect(output).not.toContain("label");
+    });
+  });
 });

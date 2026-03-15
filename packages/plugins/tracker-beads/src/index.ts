@@ -189,6 +189,12 @@ function createBeadsTracker(): Tracker {
         args.push(`--assignee=${filters.assignee}`);
       }
 
+      if (filters.labels?.length) {
+        for (const label of filters.labels) {
+          args.push(`--label=${label}`);
+        }
+      }
+
       if (filters.limit !== undefined) {
         args.push(`--limit=${filters.limit}`);
       }

@@ -38,8 +38,13 @@ async function runPreflight(config: OrchestratorConfig, projectId: string): Prom
 async function fetchReadyIssues(
   projectPath: string,
   limit: number,
+  scopeLabel?: string,
 ): Promise<ReadyIssue[]> {
-  const { stdout } = await exec("bd", ["ready", "--json", "--limit", String(limit)], {
+  const args = ["ready", "--json", "--limit", String(limit)];
+  if (scopeLabel) {
+    args.push("--label", scopeLabel);
+  }
+  const { stdout } = await exec("bd", args, {
     cwd: projectPath,
   });
 
@@ -77,10 +82,11 @@ export function registerSpawnReady(program: Command): void {
     .option("--dry-run", "List ready issues without spawning")
     .option("--limit <n>", "Maximum number of issues to spawn (default: 5)", "5")
     .option("--open", "Open the ao status UI after spawning")
+    .option("--scope <label>", "Only process issues with this beads label")
     .action(
       async (
         projectId: string,
-        opts: { dryRun?: boolean; limit: string; open?: boolean },
+        opts: { dryRun?: boolean; limit: string; open?: boolean; scope?: string },
       ) => {
         const config = loadConfig();
 
@@ -102,6 +108,7 @@ export function registerSpawnReady(program: Command): void {
         console.log(`  Project: ${chalk.bold(projectId)}`);
         console.log(`  Path:    ${chalk.dim(projectPath)}`);
         console.log(`  Limit:   ${limit}`);
+        if (opts.scope) console.log(`  Scope:   ${chalk.cyan(opts.scope)}`);
         if (opts.dryRun) console.log(`  Mode:    ${chalk.yellow("dry-run")}`);
         console.log();
 
@@ -116,7 +123,7 @@ export function registerSpawnReady(program: Command): void {
         // Fetch ready issues from beads
         let readyIssues: ReadyIssue[];
         try {
-          readyIssues = await fetchReadyIssues(projectPath, limit);
+          readyIssues = await fetchReadyIssues(projectPath, limit, opts.scope);
         } catch (err) {
           console.error(
             chalk.red(`✗ Failed to fetch ready issues: ${err instanceof Error ? err.message : String(err)}`),
@@ -125,7 +132,23 @@ export function registerSpawnReady(program: Command): void {
         }
 
         if (readyIssues.length === 0) {
-          console.log(chalk.dim("No ready issues found."));
+          if (opts.scope) {
+            console.log(chalk.dim(`No ready issues found with label "${opts.scope}".`));
+            try {
+              const { stdout: labelsOut } = await exec("bd", ["label", "list-all", "--json"], {
+                cwd: projectPath,
+              });
+              const parsed = JSON.parse(labelsOut) as Array<{ label: string; count: number }>;
+              const allLabels = parsed.map((l) => l.label);
+              if (allLabels.length > 0) {
+                console.log(chalk.dim(`Available labels: ${allLabels.join(", ")}`));
+              }
+            } catch {
+              // best effort — bd label list-all may not be available
+            }
+          } else {
+            console.log(chalk.dim("No ready issues found."));
+          }
           return;
         }
 
