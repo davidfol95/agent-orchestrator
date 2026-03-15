@@ -461,17 +461,18 @@ describe("runReviewPass", () => {
 
   // --- Timeout handling ---
 
-  it("rejects with timeout error when claude takes longer than 15 minutes", async () => {
+  it("returns clean with 'Review unavailable' when claude exceeds 15-minute timeout", async () => {
     vi.useFakeTimers();
 
-    const proc = new EventEmitter() as unknown as MockProc;
-    (proc as unknown as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter }).stdout =
-      new EventEmitter();
-    (proc as unknown as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter }).stderr =
-      new EventEmitter();
-    proc.stdin = { write: vi.fn(), end: vi.fn() };
-    const killSpy = vi.fn();
-    (proc as unknown as { kill: (signal: string) => void }).kill = killSpy;
+    // Build a silent mock proc (never emits events) with a kill spy
+    const emitter = new EventEmitter();
+    const proc = Object.assign(emitter, {
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      stdin: { write: vi.fn(), end: vi.fn() },
+      kill: vi.fn(),
+    }) as unknown as MockProc;
+    const killSpy = (proc as unknown as { kill: ReturnType<typeof vi.fn> }).kill;
 
     vi.mocked(spawn).mockReturnValue(proc as never);
 
@@ -491,10 +492,7 @@ describe("runReviewPass", () => {
 
   // --- Partial failure ---
 
-  it("does not call spawn when security scan fails (security scan is called first in gate pipeline)", async () => {
-    // This tests that runSecurityScan and runReviewPass are independent —
-    // runReviewPass itself doesn't call runSecurityScan; it's only called
-    // when there is a non-empty diff. When the diff is empty, claude is not invoked.
+  it("skips spawn when diff is empty", async () => {
     mockGitDiff("");
     const result = await runReviewPass("/tmp/ws", "main", "claude-opus-4-6", "/tmp/reviewer.md");
     expect(result.clean).toBe(true);

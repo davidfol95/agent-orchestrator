@@ -2117,6 +2117,19 @@ function makePrOpenSCM(overrides: Partial<SCM> = {}): SCM {
 }
 
 describe("auto-merge ordering", () => {
+  /** Build a PluginRegistry whose "scm" slot returns the given SCM. */
+  function makeRegistryWithSCM(scm: SCM): PluginRegistry {
+    return {
+      ...mockRegistry,
+      get: vi.fn().mockImplementation((slot: string) => {
+        if (slot === "runtime") return mockRuntime;
+        if (slot === "agent") return mockAgent;
+        if (slot === "scm") return scm;
+        return null;
+      }),
+    };
+  }
+
   it("calls enableAutoMerge when session first transitions to pr_open", async () => {
     const enableAutoMerge = vi.fn().mockResolvedValue(undefined);
     const mockSCM = makePrOpenSCM({ enableAutoMerge });
@@ -2129,16 +2142,6 @@ describe("auto-merge ordering", () => {
           scm: { plugin: "github", mergeMethod: "squash" },
         },
       },
-    };
-
-    const registryWithSCM: PluginRegistry = {
-      ...mockRegistry,
-      get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return mockRuntime;
-        if (slot === "agent") return mockAgent;
-        if (slot === "scm") return mockSCM;
-        return null;
-      }),
     };
 
     // Session transitions from working → pr_open
@@ -2154,7 +2157,7 @@ describe("auto-merge ordering", () => {
 
     const lm = createLifecycleManager({
       config: configWithMergeMethod,
-      registry: registryWithSCM,
+      registry: makeRegistryWithSCM(mockSCM),
       sessionManager: mockSessionManager,
     });
 
@@ -2170,16 +2173,6 @@ describe("auto-merge ordering", () => {
     const enableAutoMerge = vi.fn().mockResolvedValue(undefined);
     const mockSCM = makePrOpenSCM({ enableAutoMerge });
 
-    const registryWithSCM: PluginRegistry = {
-      ...mockRegistry,
-      get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return mockRuntime;
-        if (slot === "agent") return mockAgent;
-        if (slot === "scm") return mockSCM;
-        return null;
-      }),
-    };
-
     // Session already has PR, transitions working → pr_open
     const session = makeSession({ status: "working", pr: makePR() });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
@@ -2193,7 +2186,7 @@ describe("auto-merge ordering", () => {
 
     const lm = createLifecycleManager({
       config,
-      registry: registryWithSCM,
+      registry: makeRegistryWithSCM(mockSCM),
       sessionManager: mockSessionManager,
     });
 
@@ -2204,20 +2197,8 @@ describe("auto-merge ordering", () => {
   });
 
   it("does not call enableAutoMerge when SCM plugin does not support it", async () => {
-    // SCM without enableAutoMerge capability
     const mockSCMWithout = makePrOpenSCM();
-    // Ensure no enableAutoMerge property
     expect(mockSCMWithout.enableAutoMerge).toBeUndefined();
-
-    const registryWithSCM: PluginRegistry = {
-      ...mockRegistry,
-      get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return mockRuntime;
-        if (slot === "agent") return mockAgent;
-        if (slot === "scm") return mockSCMWithout;
-        return null;
-      }),
-    };
 
     const session = makeSession({ status: "working", pr: makePR() });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
@@ -2231,11 +2212,10 @@ describe("auto-merge ordering", () => {
 
     const lm = createLifecycleManager({
       config,
-      registry: registryWithSCM,
+      registry: makeRegistryWithSCM(mockSCMWithout),
       sessionManager: mockSessionManager,
     });
 
-    // Should not throw even though enableAutoMerge is absent
     await expect(lm.check("app-1")).resolves.toBeUndefined();
     expect(lm.getStates().get("app-1")).toBe("pr_open");
   });
@@ -2244,17 +2224,6 @@ describe("auto-merge ordering", () => {
     const enableAutoMerge = vi.fn().mockResolvedValue(undefined);
     const mockSCM = makePrOpenSCM({ enableAutoMerge });
 
-    const registryWithSCM: PluginRegistry = {
-      ...mockRegistry,
-      get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return mockRuntime;
-        if (slot === "agent") return mockAgent;
-        if (slot === "scm") return mockSCM;
-        return null;
-      }),
-    };
-
-    // Session with no PR — detectPR also returns undefined so no PR is auto-detected
     const session = makeSession({ status: "working", pr: null });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
 
@@ -2267,7 +2236,7 @@ describe("auto-merge ordering", () => {
 
     const lm = createLifecycleManager({
       config,
-      registry: registryWithSCM,
+      registry: makeRegistryWithSCM(mockSCM),
       sessionManager: mockSessionManager,
     });
 
@@ -2278,23 +2247,12 @@ describe("auto-merge ordering", () => {
   });
 
   it("enableAutoMerge failure is swallowed and does not prevent check from resolving", async () => {
-    // Use a deferred reject so the promise stays pending during check() execution,
-    // avoiding Vitest's unhandled-rejection guard from interfering with mock calls.
+    // Deferred reject avoids Vitest's unhandled-rejection guard during check()
     let triggerReject: (err: Error) => void = () => {};
     const enableAutoMerge = vi.fn().mockImplementation(
       () => new Promise<void>((_, reject) => { triggerReject = reject; }),
     );
     const mockSCM = makePrOpenSCM({ enableAutoMerge });
-
-    const registryWithSCM: PluginRegistry = {
-      ...mockRegistry,
-      get: vi.fn().mockImplementation((slot: string) => {
-        if (slot === "runtime") return mockRuntime;
-        if (slot === "agent") return mockAgent;
-        if (slot === "scm") return mockSCM;
-        return null;
-      }),
-    };
 
     const session = makeSession({ status: "working", pr: makePR() });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
@@ -2308,17 +2266,16 @@ describe("auto-merge ordering", () => {
 
     const lm = createLifecycleManager({
       config,
-      registry: registryWithSCM,
+      registry: makeRegistryWithSCM(mockSCM),
       sessionManager: mockSessionManager,
     });
 
-    // check() resolves before enableAutoMerge settles (it's fire-and-forget)
+    // check() resolves before enableAutoMerge settles (fire-and-forget)
     await expect(lm.check("app-1")).resolves.toBeUndefined();
     expect(lm.getStates().get("app-1")).toBe("pr_open");
 
-    // Now trigger the rejection — the lifecycle manager's .catch() handler should swallow it
+    // Trigger the rejection — lifecycle manager's .catch() should swallow it
     triggerReject(new Error("GitHub API rate limited"));
-    // Allow the catch handler to run
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
 });
