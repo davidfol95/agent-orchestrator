@@ -6,7 +6,6 @@
  */
 
 import { execFile, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -204,17 +203,14 @@ function buildFeedbackSection(
   return null;
 }
 
-/** Resolve a prompt path: use provided path, else default, else fall back to FALLBACK_REVIEW_PROMPT inline. */
+/** Resolve a prompt path: use provided path, else default under ~/.claude/agents/. */
 function resolvePromptPath(provided: string | undefined, defaultRelativePath: string): string {
   if (provided) {
     return provided;
   }
-  const defaultPath = join(homedir(), ".claude", "agents", defaultRelativePath);
-  if (existsSync(defaultPath)) {
-    return defaultPath;
-  }
-  // Return a special sentinel so runReviewPass uses the fallback prompt internally
-  return "";
+  // Return the default agent path — if the file doesn't exist, runReviewPass will
+  // catch the readFile error and fall back to FALLBACK_REVIEW_PROMPT.
+  return join(homedir(), ".claude", "agents", defaultRelativePath);
 }
 
 /**
@@ -222,10 +218,12 @@ function resolvePromptPath(provided: string | undefined, defaultRelativePath: st
  * 1. Secret scan (blocking)
  * 2. Code review + security review in parallel (via Promise.allSettled)
  *
- * Partial failure rules:
- * - One pass errors, other succeeds → non-blocking warn in feedback, don't block
- * - Both passes error → blocking (passed: false)
- * - Any fulfilled pass has securityConcerns: true → passed: false
+ * Partial failure policy (intentional design choice):
+ * - One pass errors, other succeeds → non-blocking (warn in feedback, don't block merge).
+ *   Rationale: a single reviewer crash/timeout should not block the entire pipeline when
+ *   the other reviewer completed successfully. The error is surfaced in combined feedback.
+ * - Both passes error → blocking (passed: false) — zero completed reviews means no merge.
+ * - Any fulfilled pass has securityConcerns: true → passed: false.
  */
 export async function runAllQualityGates(config: QualityGateConfig): Promise<QualityGateResult> {
   const { workspacePath, baseBranch, reviewModel, reviewerPromptPath, securityReviewerPromptPath } =

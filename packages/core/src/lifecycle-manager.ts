@@ -608,15 +608,17 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           };
         }
 
-        // Run gates asynchronously — detached so polling loop is not blocked
+        // Mark as running synchronously before launching detached Promise
         const scanSessionsDir = getSessionsDir(config.configPath, scanProject.path);
+        updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "running" });
+
+        // Run gates asynchronously — detached so polling loop is not blocked
         const workspacePath = scanSession.workspacePath;
         const baseBranch = scanProject.defaultBranch ?? "main";
         const qgConfig = scanProject.qualityGates;
 
         void (async () => {
           try {
-            updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "running" });
             const gateResult = await runAllQualityGates({
               workspacePath,
               baseBranch,
