@@ -177,5 +177,5 @@ export type {
 } from "./config-generator.js";
 
 // Quality Gates — security scan and review pass
-export { runSecurityScan, runReviewPass } from "./quality-gates.js";
-export type { SecurityScanResult, ReviewPassResult } from "./quality-gates.js";
+export { runSecurityScan, runReviewPass, runAllQualityGates } from "./quality-gates.js";
+export type { SecurityScanResult, ReviewPassResult, QualityGateResult, QualityGateConfig } from "./quality-gates.js";
