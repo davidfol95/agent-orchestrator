@@ -93,8 +93,6 @@ export interface ReviewPassResult {
   securityConcerns: boolean;
 }
 
-const MAX_DIFF_CHARS = 100_000;
-
 const SECURITY_KEYWORDS_PATTERN =
   /secret|credential|injection|vulnerability|hardcoded|data.loss|auth|token|password|api.key/i;
 
@@ -202,32 +200,24 @@ export async function runReviewPass(
     agentPrompt = FALLBACK_REVIEW_PROMPT;
   }
 
-  // Get diff from git
-  let diffContent: string;
+  // (2) Empty-diff guard: if no changes, skip review
   try {
-    const { stdout } = await execFileAsync("git", ["diff", `origin/${baseBranch}...HEAD`], {
-      cwd: workspacePath,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    diffContent = stdout;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[quality-gates] Review pass unavailable: git diff failed: ${message}`);
-    return { clean: false, feedback: "Review unavailable — git diff failed", securityConcerns: false };
+    const { stdout } = await execFileAsync(
+      "git", ["diff", `origin/${baseBranch}...HEAD`, "--stat"],
+      { cwd: workspacePath },
+    );
+    if (!stdout.trim()) {
+      return { clean: true, feedback: "No changes to review", securityConcerns: false };
+    }
+  } catch {
+    // Can't determine diff state — proceed with review anyway
   }
 
-  // Truncate diffs > 100K chars
-  if (diffContent.length > MAX_DIFF_CHARS) {
-    diffContent =
-      diffContent.slice(0, MAX_DIFF_CHARS) + "\n... [diff truncated at 100K characters]";
-  }
+  // (3) Build user prompt (reviewer explores code via tools)
+  const userPrompt = `Review the code changes on this branch compared to origin/${baseBranch}.
 
-  // (2) Build user prompt
-  const userPrompt = `Review the code changes in this diff.
-
-<diff>
-${diffContent}
-</diff>
+Start by running: git diff origin/${baseBranch}...HEAD --stat
+Then review changed files. Read full files for context when needed.
 
 Output this block at the end:
 ---REVIEW-RESULT---
@@ -235,7 +225,7 @@ status: clean OR concerns
 remaining_concerns: list of concerns, or "none"
 ---END-REVIEW-RESULT---`;
 
-  // (3) Run claude --print
+  // (4) Run claude --print
   let reviewOutput: string;
   try {
     reviewOutput = await runClaudeReview(agentPrompt, userPrompt, model, workspacePath);
@@ -245,7 +235,7 @@ remaining_concerns: list of concerns, or "none"
     return { clean: true, feedback: "Review unavailable", securityConcerns: false };
   }
 
-  // (4) Parse ---REVIEW-RESULT--- block and extract status
+  // (5) Parse ---REVIEW-RESULT--- block and extract status
   const resultBlockMatch = reviewOutput.match(
     /---REVIEW-RESULT---\s*([\s\S]*?)\s*---END-REVIEW-RESULT---/,
   );
@@ -261,7 +251,7 @@ remaining_concerns: list of concerns, or "none"
     feedback = block.trim();
   }
 
-  // (5) Post-review security keyword scan
+  // (6) Post-review security keyword scan
   // Only set securityConcerns=true when keywords are found AND status is 'concerns'
   const hasSecurityKeywords = SECURITY_KEYWORDS_PATTERN.test(reviewOutput);
   const securityConcerns = hasSecurityKeywords && status === "concerns";

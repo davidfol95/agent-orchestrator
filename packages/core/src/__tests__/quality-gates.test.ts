@@ -365,35 +365,37 @@ describe("runReviewPass", () => {
     expect(systemPrompt).toContain("code reviewer");
   });
 
-  // --- Diff size handling ---
+  // --- Diff size / empty-diff handling ---
 
-  it("returns clean when diff is empty", async () => {
+  it("returns clean with 'No changes to review' when diff is empty — claude is not called", async () => {
     mockGitDiff("");
-    vi.mocked(spawn).mockReturnValue(createMockProc(makeReviewOutput("clean")) as never);
     const result = await runReviewPass("/tmp/ws", "main", "claude-opus-4-6", "/tmp/reviewer.md");
     expect(result.clean).toBe(true);
+    expect(result.feedback).toBe("No changes to review");
+    expect(result.securityConcerns).toBe(false);
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
   });
 
-  it("truncates diff larger than 100K characters", async () => {
-    const hugeDiff = "+" + "x".repeat(200_000);
-    mockGitDiff(hugeDiff);
+  it("user prompt instructs reviewer to run git diff --stat and read files", async () => {
     const proc = createMockProc(makeReviewOutput("clean"));
     vi.mocked(spawn).mockReturnValue(proc as never);
 
     await runReviewPass("/tmp/ws", "main", "claude-opus-4-6", "/tmp/reviewer.md");
 
     const writtenPrompt = (proc.stdin.write as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
-    expect(writtenPrompt).toContain("[diff truncated at 100K characters]");
+    expect(writtenPrompt).toContain("git diff origin/main...HEAD --stat");
+    expect(writtenPrompt).toContain("Read full files for context when needed");
   });
 
   // --- Error / timeout handling ---
 
-  it("returns clean with 'Review unavailable' when git diff fails", async () => {
+  it("proceeds with review when git diff --stat fails", async () => {
     mockGitDiffError("not a git repository");
+    const proc = createMockProc(makeReviewOutput("clean"));
+    vi.mocked(spawn).mockReturnValue(proc as never);
     const result = await runReviewPass("/tmp/ws", "main", "claude-opus-4-6", "/tmp/reviewer.md");
     expect(result.clean).toBe(true);
-    expect(result.feedback).toBe("Review unavailable");
-    expect(result.securityConcerns).toBe(false);
+    expect(vi.mocked(spawn)).toHaveBeenCalled();
   });
 
   it("returns clean when claude exits with non-zero code", async () => {
