@@ -238,7 +238,7 @@ remaining_concerns: list of concerns, or "none"
   // (3) Run claude --print
   let reviewOutput: string;
   try {
-    reviewOutput = await runClaudeReview(agentPrompt, userPrompt, model);
+    reviewOutput = await runClaudeReview(agentPrompt, userPrompt, model, workspacePath);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[quality-gates] Review pass unavailable: ${message}`);
