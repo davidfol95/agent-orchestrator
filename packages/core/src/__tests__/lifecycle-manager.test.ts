@@ -2185,7 +2185,7 @@ describe("auto-merge ordering", () => {
     expect(enableAutoMerge).not.toHaveBeenCalled();
   });
 
-  it("does NOT call enableAutoMerge on pr_open when mergeMethod is configured but quality gates are absent", async () => {
+  it("does NOT call enableAutoMerge on pr_open when mergeMethod is omitted and quality gates are absent", async () => {
     const enableAutoMerge = vi.fn().mockResolvedValue(undefined);
     const mockSCM = makePrOpenSCM({ enableAutoMerge });
 
