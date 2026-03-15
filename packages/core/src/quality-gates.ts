@@ -168,6 +168,79 @@ function runClaudeReview(
   });
 }
 
+// =============================================================================
+// runAllQualityGates
+// =============================================================================
+
+export interface QualityGatesResult {
+  /** True if all configured gates passed. */
+  passed: boolean;
+  /** True if a blocking security concern was found (implies passed=false). */
+  blocked: boolean;
+  /** Message to deliver to the agent, or null if no message is needed. */
+  agentMessage: string | null;
+}
+
+/**
+ * Run all configured quality gates in order: security scan, then review pass.
+ *
+ * Returns a structured result indicating whether gates passed, whether they
+ * were blocked (security concern), and any message to send to the agent.
+ *
+ * @param workspacePath - Absolute path to the git workspace / worktree
+ * @param baseBranch    - Name of the base branch (e.g. "main")
+ * @param qgConfig      - Optional quality gate config (reviewerPrompt, reviewModel)
+ */
+export async function runAllQualityGates(
+  workspacePath: string,
+  baseBranch: string,
+  qgConfig?: { reviewerPrompt?: string; reviewModel?: string },
+): Promise<QualityGatesResult> {
+  // Step 1: Security scan
+  const scanResult = await runSecurityScan(workspacePath, baseBranch);
+  if (!scanResult.clean) {
+    const findingsList = scanResult.findings.join("\n");
+    return {
+      passed: false,
+      blocked: true,
+      agentMessage: `Security scan found potential issues in this PR. Please review and fix before merging.\n\nFindings:\n${findingsList}`,
+    };
+  }
+
+  // Step 2: Review pass (only if configured)
+  if (qgConfig?.reviewerPrompt && qgConfig?.reviewModel) {
+    const reviewResult = await runReviewPass(
+      workspacePath,
+      baseBranch,
+      qgConfig.reviewModel,
+      qgConfig.reviewerPrompt,
+    );
+
+    if (reviewResult.securityConcerns) {
+      return {
+        passed: false,
+        blocked: true,
+        agentMessage: `Security review identified concerns that BLOCK this PR from merging. Please address the following:\n\n${reviewResult.feedback}`,
+      };
+    }
+
+    if (!reviewResult.clean) {
+      // Non-blocking feedback — gates still pass but agent receives feedback
+      return {
+        passed: true,
+        blocked: false,
+        agentMessage: `Code review feedback (non-blocking):\n\n${reviewResult.feedback}`,
+      };
+    }
+  }
+
+  return { passed: true, blocked: false, agentMessage: null };
+}
+
+// =============================================================================
+// runReviewPass
+// =============================================================================
+
 /**
  * Run a review pass using the Claude CLI against the diff between base branch and HEAD.
  *

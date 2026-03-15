@@ -41,7 +41,7 @@ import { updateMetadata } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
 import { createCorrelationId, createProjectObserver } from "./observability.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
-import { runSecurityScan, runReviewPass } from "./quality-gates.js";
+import { runAllQualityGates } from "./quality-gates.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -611,6 +611,15 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         const scanSessionsDir = getSessionsDir(config.configPath, scanProject.path);
         updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "running" });
 
+        // Capture SCM plugin now (before async detach) so auto-merge can fire after gates pass
+        const gateAutoMergeProject = scanProject;
+        const gateScm = gateAutoMergeProject.scm
+          ? registry.get<SCM>("scm", gateAutoMergeProject.scm.plugin)
+          : null;
+        const gateMergeMethod =
+          (gateAutoMergeProject.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
+        const gatePr = scanSession.pr;
+
         // Run gates asynchronously — detached so polling loop is not blocked
         const workspacePath = scanSession.workspacePath;
         const baseBranch = scanProject.defaultBranch ?? "main";
@@ -618,15 +627,16 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
         void (async () => {
           try {
-            // Step 1: Security scan
-            const scanResult = await runSecurityScan(workspacePath, baseBranch);
-            if (!scanResult.clean) {
-              const findingsList = scanResult.findings.join("\n");
-              const secMessage = `Security scan found potential issues in this PR. Please review and fix before merging.\n\nFindings:\n${findingsList}`;
-              try {
-                await sessionManager.send(sessionId, secMessage);
-              } catch {
-                // Best-effort send
+            const gateResult = await runAllQualityGates(workspacePath, baseBranch, qgConfig);
+
+            if (!gateResult.passed) {
+              // Gates failed — send message to agent and mark as failed
+              if (gateResult.agentMessage) {
+                try {
+                  await sessionManager.send(sessionId, gateResult.agentMessage);
+                } catch {
+                  // Best-effort send
+                }
               }
               updateMetadata(scanSessionsDir, scanSession.id, {
                 qualityGateStatus: "failed",
@@ -635,46 +645,30 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               return;
             }
 
-            // Step 2: Review pass (only if configured)
-            if (qgConfig?.reviewerPrompt && qgConfig?.reviewModel) {
-              const reviewResult = await runReviewPass(
-                workspacePath,
-                baseBranch,
-                qgConfig.reviewModel,
-                qgConfig.reviewerPrompt,
-              );
-
-              if (reviewResult.securityConcerns) {
-                // BLOCK: security concerns found in review
-                const blockMessage = `Security review identified concerns that BLOCK this PR from merging. Please address the following:\n\n${reviewResult.feedback}`;
-                try {
-                  await sessionManager.send(sessionId, blockMessage);
-                } catch {
-                  // Best-effort send
-                }
-                updateMetadata(scanSessionsDir, scanSession.id, {
-                  qualityGateStatus: "failed",
-                  lastQualityGateCommit: currentHead,
-                });
-                return;
-              }
-
-              if (!reviewResult.clean) {
-                // Non-blocking feedback — agent can iterate
-                const feedbackMessage = `Code review feedback (non-blocking):\n\n${reviewResult.feedback}`;
-                try {
-                  await sessionManager.send(sessionId, feedbackMessage);
-                } catch {
-                  // Best-effort send
-                }
-              }
-            }
-
             // All gates passed — update commit marker and clear status
             updateMetadata(scanSessionsDir, scanSession.id, {
               qualityGateStatus: "",
               lastQualityGateCommit: currentHead,
             });
+
+            // Send non-blocking feedback to agent if any
+            if (gateResult.agentMessage) {
+              try {
+                await sessionManager.send(sessionId, gateResult.agentMessage);
+              } catch {
+                // Best-effort send
+              }
+            }
+
+            // Enable auto-merge now that quality gates have passed
+            if (gatePr && gateScm?.enableAutoMerge) {
+              void gateScm.enableAutoMerge(gatePr, gateMergeMethod).catch((err: unknown) => {
+                const reason = err instanceof Error ? err.message : String(err);
+                console.warn(
+                  `[lifecycle-manager] Failed to enable auto-merge for ${sessionId} after quality gates: ${reason}`,
+                );
+              });
+            }
           } catch (err) {
             const reason = err instanceof Error ? err.message : String(err);
             console.warn(`[lifecycle-manager] Quality gate error for ${sessionId}: ${reason}`);
@@ -992,22 +986,29 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         }
       }
 
-      // Enable GitHub auto-merge when a PR is first opened.
-      // This lets GitHub merge automatically once all required conditions are met
-      // (CI passing, reviews approved, etc.) without manual intervention.
+      // Enable GitHub auto-merge when a PR is first opened, but only when quality
+      // gates are NOT configured. If a security-scan reaction is active, auto-merge
+      // is deferred until after the gates pass (see the security-scan reaction handler).
       if (newStatus === "pr_open" && session.pr) {
         const autoMergeProject = config.projects[session.projectId];
-        const autoMergeScm = autoMergeProject?.scm
-          ? registry.get<SCM>("scm", autoMergeProject.scm.plugin)
-          : null;
-        const mergeMethod = (autoMergeProject?.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
-        if (autoMergeScm?.enableAutoMerge) {
-          void autoMergeScm.enableAutoMerge(session.pr, mergeMethod).catch((err: unknown) => {
-            const reason = err instanceof Error ? err.message : String(err);
-            console.warn(
-              `[lifecycle-manager] Failed to enable auto-merge for ${session.id}: ${reason}`,
-            );
-          });
+        const securityScanReaction = getReactionConfigForSession(session, "security-scan");
+        const qualityGatesActive =
+          !!(securityScanReaction?.action === "security-scan" && securityScanReaction?.auto !== false);
+
+        if (!qualityGatesActive) {
+          const autoMergeScm = autoMergeProject?.scm
+            ? registry.get<SCM>("scm", autoMergeProject.scm.plugin)
+            : null;
+          const mergeMethod =
+            (autoMergeProject?.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
+          if (autoMergeScm?.enableAutoMerge) {
+            void autoMergeScm.enableAutoMerge(session.pr, mergeMethod).catch((err: unknown) => {
+              const reason = err instanceof Error ? err.message : String(err);
+              console.warn(
+                `[lifecycle-manager] Failed to enable auto-merge for ${session.id}: ${reason}`,
+              );
+            });
+          }
         }
       }
 
