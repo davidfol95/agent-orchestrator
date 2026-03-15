@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { buildPrompt, BASE_AGENT_PROMPT } from "../prompt-builder.js";
+import { buildPrompt, buildBasePrompt, BASE_AGENT_PROMPT } from "../prompt-builder.js";
 import type { ProjectConfig } from "../types.js";
 
 let tmpDir: string;
@@ -189,6 +189,16 @@ describe("buildPrompt", () => {
     expect(result).toContain("Project: Test App");
   });
 
+  it("uses project defaultBranch in base prompt", () => {
+    project.defaultBranch = "develop";
+    const result = buildPrompt({
+      project,
+      projectId: "test-app",
+    });
+    expect(result).toContain("origin/develop");
+    expect(result).toContain("--base develop");
+  });
+
   it("includes reaction hints for auto send-to-agent reactions", () => {
     project.reactions = {
       "ci-failed": { auto: true, action: "send-to-agent" },
@@ -204,16 +214,40 @@ describe("buildPrompt", () => {
   });
 });
 
-describe("BASE_AGENT_PROMPT", () => {
-  it("is a non-empty string", () => {
-    expect(typeof BASE_AGENT_PROMPT).toBe("string");
-    expect(BASE_AGENT_PROMPT.length).toBeGreaterThan(100);
+describe("buildBasePrompt", () => {
+  it("returns a non-empty string", () => {
+    const result = buildBasePrompt("main");
+    expect(typeof result).toBe("string");
+    expect(result.length).toBeGreaterThan(100);
   });
 
   it("covers key topics", () => {
-    expect(BASE_AGENT_PROMPT).toContain("Session Lifecycle");
-    expect(BASE_AGENT_PROMPT).toContain("Git Workflow");
-    expect(BASE_AGENT_PROMPT).toContain("PR Best Practices");
-    expect(BASE_AGENT_PROMPT).toContain("ao session claim-pr");
+    const result = buildBasePrompt("main");
+    expect(result).toContain("Session Lifecycle");
+    expect(result).toContain("Git Workflow");
+    expect(result).toContain("Landing the Code");
+    expect(result).toContain("PR Best Practices");
+    expect(result).toContain("ao session claim-pr");
+  });
+
+  it("interpolates the default branch name", () => {
+    const result = buildBasePrompt("develop");
+    expect(result).toContain("origin/develop");
+    expect(result).toContain("--base develop");
+    expect(result).not.toContain("origin/main");
+  });
+
+  it("includes full lifecycle steps", () => {
+    const result = buildBasePrompt("main");
+    expect(result).toContain("Step 1: Pre-push secret scan");
+    expect(result).toContain("Step 2: Push and create PR");
+    expect(result).toContain("Step 3: Quality reviews");
+    expect(result).toContain("Step 4: Wait for CI");
+    expect(result).toContain("Step 5: Merge");
+    expect(result).toContain("Step 6: Close tracker issue");
+  });
+
+  it("convenience export matches buildBasePrompt with main", () => {
+    expect(BASE_AGENT_PROMPT).toBe(buildBasePrompt("main"));
   });
 });

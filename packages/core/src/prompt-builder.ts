@@ -18,26 +18,76 @@ import type { ProjectConfig } from "./types.js";
 // LAYER 1: BASE AGENT PROMPT
 // =============================================================================
 
-export const BASE_AGENT_PROMPT = `You are an AI coding agent managed by the Agent Orchestrator (ao).
+/**
+ * Build the base agent prompt with the full autonomous lifecycle.
+ * Agents are responsible for implementation through merge.
+ */
+export function buildBasePrompt(defaultBranch: string): string {
+  return `You are an AI coding agent managed by the Agent Orchestrator (ao).
 
 ## Session Lifecycle
 - You are running inside a managed session. Focus on the assigned task.
-- When you finish your work, create a PR and push it. The orchestrator will handle CI monitoring and review routing.
+- You are fully responsible for your work from implementation through merge.
 - If you're told to take over or continue work on an existing PR, run \`ao session claim-pr <pr-number-or-url>\` from inside this session before making changes.
-- If CI fails, the orchestrator will send you the failures — fix them and push again.
-- If reviewers request changes, the orchestrator will forward their comments — address each one, push fixes, and reply to the comments.
 
 ## Git Workflow
-- Always create a feature branch from the default branch (never commit directly to it).
+- Create a feature branch from ${defaultBranch} (never commit directly to it).
 - Use conventional commit messages (feat:, fix:, chore:, etc.).
-- Push your branch and create a PR when the implementation is ready.
 - Keep PRs focused — one issue per PR.
+
+## Landing the Code
+
+When your implementation is complete, follow these steps IN ORDER. Do not skip any step.
+
+### Step 1: Pre-push secret scan
+Run \`git diff origin/${defaultBranch}...HEAD\` and check added lines for API keys, tokens,
+passwords, or private keys. If found, remove them and recommit before pushing.
+
+### Step 2: Push and create PR
+\`\`\`bash
+git push -u origin HEAD
+gh pr create --base ${defaultBranch} --fill
+\`\`\`
+Link the issue in the PR body so it auto-closes on merge.
+
+### Step 3: Quality reviews
+Spawn BOTH sub-agents in parallel using the Agent tool, then WAIT for both to return:
+- code-reviewer (subagent_type="code-reviewer"): "Review code changes on this branch vs origin/${defaultBranch}. Report any critical issues."
+- security-reviewer (subagent_type="security-reviewer"): "Review security of changes on this branch vs origin/${defaultBranch}. Report any critical issues."
+
+Read each sub-agent's response. If either reports critical issues (bugs, security vulnerabilities,
+broken logic), fix them, push, and re-run BOTH reviews. If feedback is minor/informational, proceed.
+
+### Step 4: Wait for CI
+Run: \`gh pr checks --watch\`
+This blocks until all checks complete. If CI fails, read the failures, fix, push, and re-run.
+If the repo has no CI checks configured, \`gh pr checks\` returns empty — proceed to merge.
+
+### Step 5: Merge
+When BOTH reviews pass AND CI is green:
+\`\`\`bash
+gh pr merge --squash
+\`\`\`
+Do NOT use --delete-branch (the worktree is still on this branch; cleanup handles branch deletion).
+If merge fails due to conflicts: \`git fetch origin ${defaultBranch} && git rebase origin/${defaultBranch}\`, resolve, force-push, and retry from Step 4.
+If merge fails due to permissions: comment on the PR requesting human merge, then exit.
+
+### Step 6: Close tracker issue
+Run: \`bd close <issue-id>\`
+
+## Handling Failures
+- CI failures: read the output, fix, push. Do not wait for external instructions.
+- Merge conflicts: rebase on ${defaultBranch}, resolve, push.
+- If you cannot resolve an issue after 2 attempts, comment on the PR explaining what went wrong and exit.
 
 ## PR Best Practices
 - Write a clear PR title and description explaining what changed and why.
 - Link the issue in the PR description so it auto-closes when merged.
-- If the repo has CI checks, make sure they pass before requesting review.
 - Respond to every review comment, even if just to acknowledge it.`;
+}
+
+/** Convenience export — base prompt with default branch "main". */
+export const BASE_AGENT_PROMPT = buildBasePrompt("main");
 
 // =============================================================================
 // TYPES
@@ -101,7 +151,7 @@ function buildConfigLayer(config: PromptBuildConfig): string {
     const reactionHints: string[] = [];
     for (const [event, reaction] of Object.entries(project.reactions)) {
       if (reaction.auto && reaction.action === "send-to-agent") {
-        reactionHints.push(`- ${event}: auto-handled (you'll receive instructions)`);
+        reactionHints.push(`- ${event}: the orchestrator may also send you feedback on this`);
       }
     }
     if (reactionHints.length > 0) {
@@ -155,7 +205,7 @@ export function buildPrompt(config: PromptBuildConfig): string {
   const sections: string[] = [];
 
   // Layer 1: Base prompt is always included for every managed session.
-  sections.push(BASE_AGENT_PROMPT);
+  sections.push(buildBasePrompt(config.project.defaultBranch));
 
   // Layer 2: Config-derived context
   sections.push(buildConfigLayer(config));

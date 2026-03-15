@@ -384,7 +384,7 @@ function applyDefaultReactions(config: OrchestratorConfig): OrchestratorConfig {
     },
     "security-scan": {
       auto: true,
-      action: "security-scan",
+      action: "notify",
     },
     // review-pass is embedded within the security-scan flow, not a standalone action
   };

@@ -11,8 +11,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
   SESSION_STATUS,
   PR_STATE,
@@ -32,9 +30,7 @@ import {
   type SCM,
   type Notifier,
   type Session,
-  type PRInfo,
   type EventPriority,
-  type MergeMethod,
   type ProjectConfig as _ProjectConfig,
   type Tracker,
 } from "./types.js";
@@ -42,9 +38,6 @@ import { updateMetadata } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
 import { createCorrelationId, createProjectObserver } from "./observability.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
-import { runAllQualityGates } from "./quality-gates.js";
-
-const execFileAsync = promisify(execFile);
 
 /** Parse a duration string like "10m", "30s", "1h" to milliseconds. */
 function parseDuration(str: string): number {
@@ -550,117 +543,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         }
       }
 
-      case "security-scan": {
-        // Fetch the session to access workspacePath and metadata
-        const scanSession = await sessionManager.get(sessionId);
-        if (!scanSession || !scanSession.workspacePath) {
-          return {
-            reactionType: reactionKey,
-            success: false,
-            action: "security-scan",
-            escalated: false,
-          };
-        }
-
-        const scanProject = config.projects[projectId];
-        if (!scanProject) {
-          return {
-            reactionType: reactionKey,
-            success: false,
-            action: "security-scan",
-            escalated: false,
-          };
-        }
-
-        // Skip if gates already running for this session
-        if (scanSession.metadata["qualityGateStatus"] === "running") {
-          return {
-            reactionType: reactionKey,
-            success: true,
-            action: "security-scan",
-            escalated: false,
-          };
-        }
-
-        // Skip if HEAD hasn't changed since last gate run
-        let currentHead: string;
-        try {
-          const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
-            cwd: scanSession.workspacePath,
-          });
-          currentHead = stdout.trim();
-        } catch {
-          return {
-            reactionType: reactionKey,
-            success: false,
-            action: "security-scan",
-            escalated: false,
-          };
-        }
-
-        const lastGateCommit = scanSession.metadata["lastQualityGateCommit"] ?? "";
-        if (lastGateCommit === currentHead) {
-          return {
-            reactionType: reactionKey,
-            success: true,
-            action: "security-scan",
-            escalated: false,
-          };
-        }
-
-        // Mark as running synchronously before launching detached Promise
-        const scanSessionsDir = getSessionsDir(config.configPath, scanProject.path);
-        updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "running" });
-
-        // Run gates asynchronously — detached so polling loop is not blocked
-        const workspacePath = scanSession.workspacePath;
-        const baseBranch = scanProject.defaultBranch ?? "main";
-        const qgConfig = scanProject.qualityGates;
-
-        void (async () => {
-          try {
-            const gateResult = await runAllQualityGates({
-              workspacePath,
-              baseBranch,
-              reviewModel: qgConfig?.reviewModel ?? "claude-opus-4-6",
-              reviewerPromptPath: qgConfig?.reviewerPrompt,
-              securityReviewerPromptPath: qgConfig?.securityReviewerPrompt,
-            });
-
-            if (gateResult.combinedFeedback) {
-              try {
-                await sessionManager.send(sessionId, gateResult.combinedFeedback);
-              } catch {
-                // Best-effort send
-              }
-            }
-
-            if (gateResult.passed) {
-              updateMetadata(scanSessionsDir, scanSession.id, {
-                qualityGateStatus: "",
-                lastQualityGateCommit: currentHead,
-              });
-              if (scanSession.pr) enableAutoMergeForSession(scanSession.id, projectId, scanSession.pr);
-            } else {
-              updateMetadata(scanSessionsDir, scanSession.id, {
-                qualityGateStatus: "failed",
-                lastQualityGateCommit: currentHead,
-              });
-            }
-          } catch (err) {
-            const reason = err instanceof Error ? err.message : String(err);
-            console.warn(`[lifecycle-manager] Quality gate error for ${sessionId}: ${reason}`);
-            updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "" });
-          }
-        })();
-
-        return {
-          reactionType: reactionKey,
-          success: true,
-          action: "security-scan",
-          escalated: false,
-        };
-      }
     }
 
     return {
@@ -706,43 +588,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       cleaned[key] = value;
     }
     session.metadata = cleaned;
-  }
-
-  function enableAutoMergeForSession(
-    sessionId: SessionId,
-    projectId: string,
-    pr: PRInfo,
-  ): void {
-    const project = config.projects[projectId];
-    const scm = project?.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
-    const mergeMethod = (project?.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
-    if (!scm) return;
-
-    if (scm.enableAutoMerge) {
-      void scm.enableAutoMerge(pr, mergeMethod).catch(async (err: unknown) => {
-        const reason = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[lifecycle-manager] Auto-merge unavailable for ${sessionId}: ${reason}. Falling back to direct merge.`,
-        );
-        // Fall back to direct merge (works without branch protection / GitHub Pro)
-        try {
-          await scm.mergePR(pr, mergeMethod);
-        } catch (mergeErr: unknown) {
-          const mergeReason = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
-          console.warn(
-            `[lifecycle-manager] Direct merge also failed for ${sessionId}: ${mergeReason}`,
-          );
-        }
-      });
-    } else {
-      // No enableAutoMerge method — use direct merge
-      void scm.mergePR(pr, mergeMethod).catch((err: unknown) => {
-        const reason = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[lifecycle-manager] Failed to merge PR for ${sessionId}: ${reason}`,
-        );
-      });
-    }
   }
 
   function makeFingerprint(ids: string[]): string {
