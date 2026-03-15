@@ -111,21 +111,37 @@ function stripFrontmatter(content: string): string {
   return content;
 }
 
-/** Run claude --print with the given system prompt and user prompt piped via stdin. */
+const REVIEW_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+/** Run claude with tool access against the codebase for interactive review. */
 function runClaudeReview(
   systemPrompt: string,
   userPrompt: string,
   model: string,
+  cwd: string = process.cwd(),
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(
       "claude",
-      ["--print", "--model", model, "--system-prompt", systemPrompt],
-      { stdio: ["pipe", "pipe", "pipe"] },
+      [
+        "--print",
+        "--model", model,
+        "--system-prompt", systemPrompt,
+        "--allowedTools", "Read,Grep,Glob,Bash",
+        "--dangerously-skip-permissions",
+        "--max-turns", "30",
+        "--max-budget-usd", "5",
+      ],
+      { stdio: ["pipe", "pipe", "pipe"], cwd },
     );
 
     let stdout = "";
     let stderr = "";
+
+    const timer = setTimeout(() => {
+      proc.kill("SIGTERM");
+      reject(new Error(`claude review timed out after 15 minutes. stderr: ${stderr.trim()}`));
+    }, REVIEW_TIMEOUT_MS);
 
     proc.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
@@ -136,6 +152,7 @@ function runClaudeReview(
     });
 
     proc.on("close", (code: number | null) => {
+      clearTimeout(timer);
       if (code !== 0) {
         reject(new Error(`claude exited with code ${code}: ${stderr.trim()}`));
       } else {
@@ -144,6 +161,7 @@ function runClaudeReview(
     });
 
     proc.on("error", (err: Error) => {
+      clearTimeout(timer);
       reject(err);
     });
 
