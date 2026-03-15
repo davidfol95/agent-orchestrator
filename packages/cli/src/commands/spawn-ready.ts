@@ -39,10 +39,14 @@ async function fetchReadyIssues(
   projectPath: string,
   limit: number,
   scopeLabel?: string,
+  issueType?: string,
 ): Promise<ReadyIssue[]> {
   const args = ["ready", "--json", "--limit", String(limit)];
   if (scopeLabel) {
     args.push("--label", scopeLabel);
+  }
+  if (issueType) {
+    args.push("--type", issueType);
   }
   const { stdout } = await exec("bd", args, {
     cwd: projectPath,
@@ -83,10 +87,11 @@ export function registerSpawnReady(program: Command): void {
     .option("--limit <n>", "Maximum number of issues to spawn (default: 5)", "5")
     .option("--open", "Open the ao status UI after spawning")
     .option("--scope <label>", "Only process issues with this beads label")
+    .option("--type <type>", "Only process issues of this type (task, bug, feature). Excludes epics by default unless specified.")
     .action(
       async (
         projectId: string,
-        opts: { dryRun?: boolean; limit: string; open?: boolean; scope?: string },
+        opts: { dryRun?: boolean; limit: string; open?: boolean; scope?: string; type?: string },
       ) => {
         const config = loadConfig();
 
@@ -123,7 +128,7 @@ export function registerSpawnReady(program: Command): void {
         // Fetch ready issues from beads
         let readyIssues: ReadyIssue[];
         try {
-          readyIssues = await fetchReadyIssues(projectPath, limit, opts.scope);
+          readyIssues = await fetchReadyIssues(projectPath, limit, opts.scope, opts.type);
         } catch (err) {
           console.error(
             chalk.red(`✗ Failed to fetch ready issues: ${err instanceof Error ? err.message : String(err)}`),
