@@ -2353,8 +2353,8 @@ describe("quality gates + auto-merge race condition", () => {
   beforeEach(() => {
     vi.mocked(runAllQualityGates).mockResolvedValue({
       passed: true,
-      blocked: false,
-      agentMessage: null,
+      securityScanResult: { clean: true, findings: [] },
+      combinedFeedback: "",
     });
 
     // Make git rev-parse HEAD succeed so the security-scan handler proceeds
@@ -2401,8 +2401,8 @@ describe("quality gates + auto-merge race condition", () => {
   it("does NOT call enableAutoMerge when quality gates fail", async () => {
     vi.mocked(runAllQualityGates).mockResolvedValue({
       passed: false,
-      blocked: true,
-      agentMessage: "Security scan found issues",
+      securityScanResult: { clean: false, findings: ["Security scan found issues"] },
+      combinedFeedback: "Security scan found issues",
     });
 
     const enableAutoMerge = vi.fn().mockResolvedValue(undefined);
@@ -2435,8 +2435,8 @@ describe("quality gates + auto-merge race condition", () => {
   it("sends gate failure message to agent when gates fail", async () => {
     vi.mocked(runAllQualityGates).mockResolvedValue({
       passed: false,
-      blocked: true,
-      agentMessage: "Security scan found potential issues",
+      securityScanResult: { clean: false, findings: ["Potential secret detected"] },
+      combinedFeedback: "Security scan found potential issues",
     });
 
     const mockSCM = makePrOpenSCMForGates();

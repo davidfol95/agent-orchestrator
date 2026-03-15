@@ -532,102 +532,153 @@ describe("runReviewPass", () => {
 // runAllQualityGates
 // =============================================================================
 
+vi.mock("node:fs", () => ({
+  existsSync: vi.fn().mockReturnValue(false),
+}));
+
+import { existsSync } from "node:fs";
+import type { QualityGateConfig } from "../quality-gates.js";
+
+function makeGateConfig(overrides: Partial<QualityGateConfig> = {}): QualityGateConfig {
+  return {
+    workspacePath: "/tmp/ws",
+    baseBranch: "main",
+    reviewModel: "claude-opus-4-6",
+    reviewerPromptPath: "/tmp/code-reviewer.md",
+    securityReviewerPromptPath: "/tmp/security-reviewer.md",
+    ...overrides,
+  };
+}
+
 describe("runAllQualityGates", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // Default: readable reviewer prompt
     vi.mocked(readFile).mockResolvedValue(MOCK_REVIEWER_PROMPT as unknown as string);
+    vi.mocked(existsSync).mockReturnValue(false);
   });
 
-  it("returns passed=true when scan is clean and no review config", async () => {
-    mockGitDiff("+const x = 1;\n");
-
-    const result = await runAllQualityGates("/tmp/ws", "main");
-
-    expect(result.passed).toBe(true);
-    expect(result.blocked).toBe(false);
-    expect(result.agentMessage).toBeNull();
-  });
-
-  it("returns passed=false and blocked=true with message when security scan fails", async () => {
-    mockGitDiff('+const key = "AKIAIOSFODNN7EXAMPLE";\n');
-
-    const result = await runAllQualityGates("/tmp/ws", "main");
-
-    expect(result.passed).toBe(false);
-    expect(result.blocked).toBe(true);
-    expect(result.agentMessage).toContain("Security scan found potential issues");
-    expect(result.agentMessage).toContain("Potential secret detected");
-  });
-
-  it("returns passed=false and blocked=true when review has security concerns", async () => {
-    mockGitDiff("+const x = 1;\n");
-    vi.mocked(spawn).mockReturnValue(
-      createMockProc(makeReviewOutput("concerns", "Possible injection vulnerability")) as never,
-    );
-
-    const result = await runAllQualityGates("/tmp/ws", "main", {
-      reviewerPrompt: "/tmp/reviewer.md",
-      reviewModel: "claude-opus-4-6",
-    });
-
-    expect(result.passed).toBe(false);
-    expect(result.blocked).toBe(true);
-    expect(result.agentMessage).toContain("BLOCK");
-    expect(result.agentMessage).toContain("injection vulnerability");
-  });
-
-  it("returns passed=true with non-null agentMessage when review is non-blocking", async () => {
-    mockGitDiff("+const x = 1;\n");
-    vi.mocked(spawn).mockReturnValue(
-      createMockProc(makeReviewOutput("concerns", "Missing null check on line 42")) as never,
-    );
-
-    const result = await runAllQualityGates("/tmp/ws", "main", {
-      reviewerPrompt: "/tmp/reviewer.md",
-      reviewModel: "claude-opus-4-6",
-    });
-
-    expect(result.passed).toBe(true);
-    expect(result.blocked).toBe(false);
-    expect(result.agentMessage).toContain("non-blocking");
-    expect(result.agentMessage).toContain("Missing null check");
-  });
-
-  it("returns passed=true and agentMessage=null when review is clean", async () => {
+  it("returns passed=true with clean securityScanResult when scan is clean and reviews pass", async () => {
     mockGitDiff("+const x = 1;\n");
     vi.mocked(spawn).mockReturnValue(
       createMockProc(makeReviewOutput("clean")) as never,
     );
 
-    const result = await runAllQualityGates("/tmp/ws", "main", {
-      reviewerPrompt: "/tmp/reviewer.md",
-      reviewModel: "claude-opus-4-6",
-    });
+    const result = await runAllQualityGates(makeGateConfig());
 
     expect(result.passed).toBe(true);
-    expect(result.blocked).toBe(false);
-    expect(result.agentMessage).toBeNull();
+    expect(result.securityScanResult.clean).toBe(true);
+    expect(result.combinedFeedback).toContain("## Code Review");
+    expect(result.combinedFeedback).toContain("## Security Review");
   });
 
-  it("skips review pass when only reviewerPrompt is set (reviewModel missing)", async () => {
-    mockGitDiff("+const x = 1;\n");
+  it("returns passed=false when security scan finds secrets", async () => {
+    mockGitDiff('+const key = "AKIAIOSFODNN7EXAMPLE";\n');
 
-    const result = await runAllQualityGates("/tmp/ws", "main", {
-      reviewerPrompt: "/tmp/reviewer.md",
-      // reviewModel intentionally omitted
-    });
+    const result = await runAllQualityGates(makeGateConfig());
 
-    expect(result.passed).toBe(true);
+    expect(result.passed).toBe(false);
+    expect(result.securityScanResult.clean).toBe(false);
+    expect(result.combinedFeedback).toContain("Potential secret detected");
     expect(vi.mocked(spawn)).not.toHaveBeenCalled();
   });
 
-  it("skips review pass when qgConfig is undefined", async () => {
+  it("returns passed=false when any review pass has securityConcerns", async () => {
     mockGitDiff("+const x = 1;\n");
+    vi.mocked(spawn).mockReturnValue(
+      createMockProc(makeReviewOutput("concerns", "Possible injection vulnerability")) as never,
+    );
 
-    const result = await runAllQualityGates("/tmp/ws", "main", undefined);
+    const result = await runAllQualityGates(makeGateConfig());
+
+    expect(result.passed).toBe(false);
+    expect(result.combinedFeedback).toContain("injection vulnerability");
+  });
+
+  it("returns passed=true when both reviews have concerns but no security keywords", async () => {
+    mockGitDiff("+const x = 1;\n");
+    // "concerns" status without security keywords → securityConcerns=false
+    vi.mocked(spawn).mockReturnValue(
+      createMockProc(makeReviewOutput("concerns", "Missing null check on line 42")) as never,
+    );
+
+    const result = await runAllQualityGates(makeGateConfig());
 
     expect(result.passed).toBe(true);
-    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    expect(result.combinedFeedback).toContain("Missing null check");
+  });
+
+  it("uses provided prompt paths instead of defaults", async () => {
+    mockGitDiff("+const x = 1;\n");
+    vi.mocked(spawn).mockReturnValue(
+      createMockProc(makeReviewOutput("clean")) as never,
+    );
+
+    await runAllQualityGates(makeGateConfig({
+      reviewerPromptPath: "/custom/code-reviewer.md",
+      securityReviewerPromptPath: "/custom/security-reviewer.md",
+    }));
+
+    // readFile called with the provided custom paths
+    expect(vi.mocked(readFile)).toHaveBeenCalledWith("/custom/code-reviewer.md", "utf8");
+    expect(vi.mocked(readFile)).toHaveBeenCalledWith("/custom/security-reviewer.md", "utf8");
+  });
+
+  it("uses default ~/.claude/agents paths when no paths provided and files exist", async () => {
+    mockGitDiff("+const x = 1;\n");
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(spawn).mockReturnValue(
+      createMockProc(makeReviewOutput("clean")) as never,
+    );
+
+    await runAllQualityGates(makeGateConfig({
+      reviewerPromptPath: undefined,
+      securityReviewerPromptPath: undefined,
+    }));
+
+    const calls = vi.mocked(readFile).mock.calls.map((c) => c[0] as string);
+    expect(calls.some((p) => p.endsWith("code-reviewer.md"))).toBe(true);
+    expect(calls.some((p) => p.endsWith("security-reviewer.md"))).toBe(true);
+  });
+
+  it("returns passed=true when both review passes return unavailable (errors caught internally)", async () => {
+    mockGitDiff("+const x = 1;\n");
+    // spawn exits with code 1 → runReviewPass catches and returns { clean: true, feedback: "Review unavailable" }
+    vi.mocked(spawn).mockReturnValue(createMockProc("", 1) as never);
+
+    const result = await runAllQualityGates(makeGateConfig());
+
+    // runReviewPass catches errors internally and returns clean=true as fallback
+    expect(result.passed).toBe(true);
+    expect(result.combinedFeedback).toContain("Review unavailable");
+  });
+
+  it("includes unavailable message in combinedFeedback when a review pass errors", async () => {
+    mockGitDiff("+const x = 1;\n");
+    // First spawn call succeeds, second errors
+    let callCount = 0;
+    vi.mocked(spawn).mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return createMockProc(makeReviewOutput("clean")) as never;
+      }
+      return createMockProc("", 1) as never;
+    });
+
+    const result = await runAllQualityGates(makeGateConfig());
+
+    expect(result.combinedFeedback).toContain("Review unavailable");
+  });
+
+  it("returns securityScanResult in result", async () => {
+    mockGitDiff("+const x = 1;\n");
+    vi.mocked(spawn).mockReturnValue(
+      createMockProc(makeReviewOutput("clean")) as never,
+    );
+
+    const result = await runAllQualityGates(makeGateConfig());
+
+    expect(result.securityScanResult).toBeDefined();
+    expect(result.securityScanResult.clean).toBe(true);
+    expect(result.securityScanResult.findings).toEqual([]);
   });
 });

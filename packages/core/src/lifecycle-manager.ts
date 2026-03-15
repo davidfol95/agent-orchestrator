@@ -626,13 +626,19 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
         void (async () => {
           try {
-            const gateResult = await runAllQualityGates(workspacePath, baseBranch, qgConfig);
+            const gateResult = await runAllQualityGates({
+              workspacePath,
+              baseBranch,
+              reviewModel: qgConfig?.reviewModel ?? "claude-opus-4-6",
+              reviewerPromptPath: qgConfig?.reviewerPrompt,
+              securityReviewerPromptPath: qgConfig?.securityReviewerPrompt,
+            });
 
             if (!gateResult.passed) {
-              // Gates failed — send message to agent and mark as failed
-              if (gateResult.agentMessage) {
+              // Gates failed — send combined feedback to agent and mark as failed
+              if (gateResult.combinedFeedback) {
                 try {
-                  await sessionManager.send(sessionId, gateResult.agentMessage);
+                  await sessionManager.send(sessionId, gateResult.combinedFeedback);
                 } catch {
                   // Best-effort send
                 }
@@ -651,9 +657,9 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             });
 
             // Send non-blocking feedback to agent if any
-            if (gateResult.agentMessage) {
+            if (gateResult.combinedFeedback) {
               try {
-                await sessionManager.send(sessionId, gateResult.agentMessage);
+                await sessionManager.send(sessionId, gateResult.combinedFeedback);
               } catch {
                 // Best-effort send
               }

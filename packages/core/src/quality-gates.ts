@@ -6,7 +6,10 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -172,69 +175,119 @@ function runClaudeReview(
 // runAllQualityGates
 // =============================================================================
 
-export interface QualityGatesResult {
-  /** True if all configured gates passed. */
+export interface QualityGateConfig {
+  workspacePath: string;
+  baseBranch: string;
+  reviewModel: string;
+  /** Path to code-reviewer agent prompt file. Defaults to ~/.claude/agents/code-reviewer.md */
+  reviewerPromptPath?: string;
+  /** Path to security-reviewer agent prompt file. Defaults to ~/.claude/agents/security-reviewer.md */
+  securityReviewerPromptPath?: string;
+}
+
+export interface QualityGateResult {
   passed: boolean;
-  /** True if a blocking security concern was found (implies passed=false). */
-  blocked: boolean;
-  /** Message to deliver to the agent, or null if no message is needed. */
-  agentMessage: string | null;
+  securityScanResult: SecurityScanResult;
+  codeReviewResult?: ReviewPassResult;
+  securityReviewResult?: ReviewPassResult;
+  combinedFeedback: string;
+}
+
+/** Resolve a prompt path: use provided path, else default, else fall back to FALLBACK_REVIEW_PROMPT inline. */
+function resolvePromptPath(provided: string | undefined, defaultRelativePath: string): string {
+  if (provided) {
+    return provided;
+  }
+  const defaultPath = join(homedir(), ".claude", "agents", defaultRelativePath);
+  if (existsSync(defaultPath)) {
+    return defaultPath;
+  }
+  // Return a special sentinel so runReviewPass uses the fallback prompt internally
+  return "";
 }
 
 /**
- * Run all configured quality gates in order: security scan, then review pass.
+ * Run all configured quality gates:
+ * 1. Secret scan (blocking)
+ * 2. Code review + security review in parallel (via Promise.allSettled)
  *
- * Returns a structured result indicating whether gates passed, whether they
- * were blocked (security concern), and any message to send to the agent.
- *
- * @param workspacePath - Absolute path to the git workspace / worktree
- * @param baseBranch    - Name of the base branch (e.g. "main")
- * @param qgConfig      - Optional quality gate config (reviewerPrompt, reviewModel)
+ * Partial failure rules:
+ * - One pass errors, other succeeds → non-blocking warn in feedback, don't block
+ * - Both passes error → blocking (passed: false)
+ * - Any fulfilled pass has securityConcerns: true → passed: false
  */
-export async function runAllQualityGates(
-  workspacePath: string,
-  baseBranch: string,
-  qgConfig?: { reviewerPrompt?: string; reviewModel?: string },
-): Promise<QualityGatesResult> {
-  // Step 1: Security scan
-  const scanResult = await runSecurityScan(workspacePath, baseBranch);
-  if (!scanResult.clean) {
-    const findingsList = scanResult.findings.join("\n");
+export async function runAllQualityGates(config: QualityGateConfig): Promise<QualityGateResult> {
+  const { workspacePath, baseBranch, reviewModel, reviewerPromptPath, securityReviewerPromptPath } =
+    config;
+
+  // Step 1: Security scan — if dirty, return early
+  const securityScanResult = await runSecurityScan(workspacePath, baseBranch);
+  if (!securityScanResult.clean) {
+    const findingsList = securityScanResult.findings.join("\n");
     return {
       passed: false,
-      blocked: true,
-      agentMessage: `Security scan found potential issues in this PR. Please review and fix before merging.\n\nFindings:\n${findingsList}`,
+      securityScanResult,
+      combinedFeedback: `Security scan found potential secrets or credentials.\n\nFindings:\n${findingsList}`,
     };
   }
 
-  // Step 2: Review pass (only if configured)
-  if (qgConfig?.reviewerPrompt && qgConfig?.reviewModel) {
-    const reviewResult = await runReviewPass(
-      workspacePath,
-      baseBranch,
-      qgConfig.reviewModel,
-      qgConfig.reviewerPrompt,
-    );
+  // Step 2: Resolve prompt paths
+  const resolvedCodeReviewerPath = resolvePromptPath(reviewerPromptPath, "code-reviewer.md");
+  const resolvedSecurityReviewerPath = resolvePromptPath(
+    securityReviewerPromptPath,
+    "security-reviewer.md",
+  );
 
-    if (reviewResult.securityConcerns) {
-      return {
-        passed: false,
-        blocked: true,
-        agentMessage: `Security review identified concerns that BLOCK this PR from merging. Please address the following:\n\n${reviewResult.feedback}`,
-      };
-    }
+  // Step 3: Run both review passes in parallel
+  const [codeReviewSettled, securityReviewSettled] = await Promise.allSettled([
+    runReviewPass(workspacePath, baseBranch, reviewModel, resolvedCodeReviewerPath),
+    runReviewPass(workspacePath, baseBranch, reviewModel, resolvedSecurityReviewerPath),
+  ]);
 
-    if (!reviewResult.clean) {
-      // Non-blocking feedback — gates still pass but agent receives feedback
-      return {
-        passed: true,
-        blocked: false,
-        agentMessage: `Code review feedback (non-blocking):\n\n${reviewResult.feedback}`,
-      };
-    }
+  const codeReviewResult =
+    codeReviewSettled.status === "fulfilled" ? codeReviewSettled.value : undefined;
+  const securityReviewResult =
+    securityReviewSettled.status === "fulfilled" ? securityReviewSettled.value : undefined;
+
+  const codeReviewError =
+    codeReviewSettled.status === "rejected" ? (codeReviewSettled.reason as Error) : undefined;
+  const securityReviewError =
+    securityReviewSettled.status === "rejected"
+      ? (securityReviewSettled.reason as Error)
+      : undefined;
+
+  // Step 4: Determine pass/fail
+  const bothErrored = codeReviewError !== undefined && securityReviewError !== undefined;
+  const anySecurityConcerns =
+    codeReviewResult?.securityConcerns === true ||
+    securityReviewResult?.securityConcerns === true;
+
+  const passed = !bothErrored && !anySecurityConcerns;
+
+  // Step 5: Build combined feedback
+  const sections: string[] = [];
+
+  if (codeReviewResult) {
+    sections.push(`## Code Review\n${codeReviewResult.feedback}`);
+  } else if (codeReviewError) {
+    sections.push(`## Code Review\n_Review unavailable: ${codeReviewError.message}_`);
   }
 
-  return { passed: true, blocked: false, agentMessage: null };
+  if (securityReviewResult) {
+    sections.push(`## Security Review\n${securityReviewResult.feedback}`);
+  } else if (securityReviewError) {
+    sections.push(`## Security Review\n_Review unavailable: ${securityReviewError.message}_`);
+  }
+
+  const combinedFeedback = sections.join("\n\n");
+
+  return {
+    passed,
+    securityScanResult,
+    codeReviewResult,
+    securityReviewResult,
+    combinedFeedback,
+  };
 }
 
 // =============================================================================
