@@ -2143,7 +2143,7 @@ describe("auto-merge ordering", () => {
     };
   }
 
-  it("calls enableAutoMerge when session first transitions to pr_open", async () => {
+  it("does NOT call enableAutoMerge when session first transitions to pr_open (no quality gates configured)", async () => {
     const enableAutoMerge = vi.fn().mockResolvedValue(undefined);
     const mockSCM = makePrOpenSCM({ enableAutoMerge });
 
@@ -2155,6 +2155,9 @@ describe("auto-merge ordering", () => {
           scm: { plugin: "github", mergeMethod: "squash" },
         },
       },
+      // No "security-scan" reaction — quality gates are not configured.
+      // enableAutoMerge must NOT be called directly on pr_open.
+      reactions: {},
     };
 
     // Session transitions from working → pr_open
@@ -2177,16 +2180,16 @@ describe("auto-merge ordering", () => {
     await lm.check("app-1");
 
     expect(lm.getStates().get("app-1")).toBe("pr_open");
-    // enableAutoMerge is fire-and-forget; give microtasks time to settle
+    // Allow microtasks to drain — enableAutoMerge must still NOT be called
     await Promise.resolve();
-    expect(enableAutoMerge).toHaveBeenCalledWith(session.pr, "squash");
+    expect(enableAutoMerge).not.toHaveBeenCalled();
   });
 
-  it("calls enableAutoMerge with default squash method when mergeMethod is not configured", async () => {
+  it("does NOT call enableAutoMerge on pr_open when mergeMethod is configured but quality gates are absent", async () => {
     const enableAutoMerge = vi.fn().mockResolvedValue(undefined);
     const mockSCM = makePrOpenSCM({ enableAutoMerge });
 
-    // Session already has PR, transitions working → pr_open
+    // config has no "security-scan" reaction — gates will not run on pr_open
     const session = makeSession({ status: "working", pr: makePR() });
     vi.mocked(mockSessionManager.get).mockResolvedValue(session);
 
@@ -2206,7 +2209,8 @@ describe("auto-merge ordering", () => {
     await lm.check("app-1");
     await Promise.resolve();
 
-    expect(enableAutoMerge).toHaveBeenCalledWith(session.pr, "squash");
+    expect(lm.getStates().get("app-1")).toBe("pr_open");
+    expect(enableAutoMerge).not.toHaveBeenCalled();
   });
 
   it("does not call enableAutoMerge when SCM plugin does not support it", async () => {
