@@ -52,11 +52,12 @@ Link the issue in the PR body so it auto-closes on merge.
 
 ### Step 3: Quality reviews
 Spawn BOTH sub-agents in parallel using the Agent tool, then WAIT for both to return:
-- code-reviewer (subagent_type="code-reviewer"): "Review code changes on this branch vs origin/${defaultBranch}. Report any critical issues."
-- security-reviewer (subagent_type="security-reviewer"): "Review security of changes on this branch vs origin/${defaultBranch}. Report any critical issues."
+- code-reviewer (subagent_type="code-reviewer"): "Review code changes on this branch vs origin/${defaultBranch}. Report any issues — critical, high, or medium priority."
+- security-reviewer (subagent_type="security-reviewer"): "Review security of changes on this branch vs origin/${defaultBranch}. Report any issues — critical, high, or medium priority."
 
-Read each sub-agent's response. If either reports critical issues (bugs, security vulnerabilities,
-broken logic), fix them, push, and re-run BOTH reviews. If feedback is minor/informational, proceed.
+Read each sub-agent's response. Fix ALL critical and high issues, and fix medium issues where practical.
+Only skip issues that are purely stylistic preferences or low-priority suggestions. Push fixes and
+re-run BOTH reviews after changes. The goal is high-quality code, not just functioning code.
 
 ### Step 4: Wait for CI
 Run: \`gh pr checks --watch\`
