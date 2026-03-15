@@ -716,11 +716,30 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const project = config.projects[projectId];
     const scm = project?.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
     const mergeMethod = (project?.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
-    if (scm?.enableAutoMerge) {
-      void scm.enableAutoMerge(pr, mergeMethod).catch((err: unknown) => {
+    if (!scm) return;
+
+    if (scm.enableAutoMerge) {
+      void scm.enableAutoMerge(pr, mergeMethod).catch(async (err: unknown) => {
         const reason = err instanceof Error ? err.message : String(err);
         console.warn(
-          `[lifecycle-manager] Failed to enable auto-merge for ${sessionId}: ${reason}`,
+          `[lifecycle-manager] Auto-merge unavailable for ${sessionId}: ${reason}. Falling back to direct merge.`,
+        );
+        // Fall back to direct merge (works without branch protection / GitHub Pro)
+        try {
+          await scm.mergePR(pr, mergeMethod);
+        } catch (mergeErr: unknown) {
+          const mergeReason = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+          console.warn(
+            `[lifecycle-manager] Direct merge also failed for ${sessionId}: ${mergeReason}`,
+          );
+        }
+      });
+    } else {
+      // No enableAutoMerge method — use direct merge
+      void scm.mergePR(pr, mergeMethod).catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[lifecycle-manager] Failed to merge PR for ${sessionId}: ${reason}`,
         );
       });
     }
