@@ -32,6 +32,7 @@ import {
   type SCM,
   type Notifier,
   type Session,
+  type PRInfo,
   type EventPriority,
   type MergeMethod,
   type ProjectConfig as _ProjectConfig,
@@ -607,25 +608,15 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           };
         }
 
-        // Mark as running before launching detached Promise
-        const scanSessionsDir = getSessionsDir(config.configPath, scanProject.path);
-        updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "running" });
-
-        // Capture SCM plugin now (before async detach) so auto-merge can fire after gates pass
-        const gateScm = scanProject.scm
-          ? registry.get<SCM>("scm", scanProject.scm.plugin)
-          : null;
-        const gateMergeMethod =
-          (scanProject.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
-        const gatePr = scanSession.pr;
-
         // Run gates asynchronously — detached so polling loop is not blocked
+        const scanSessionsDir = getSessionsDir(config.configPath, scanProject.path);
         const workspacePath = scanSession.workspacePath;
         const baseBranch = scanProject.defaultBranch ?? "main";
         const qgConfig = scanProject.qualityGates;
 
         void (async () => {
           try {
+            updateMetadata(scanSessionsDir, scanSession.id, { qualityGateStatus: "running" });
             const gateResult = await runAllQualityGates({
               workspacePath,
               baseBranch,
@@ -634,29 +625,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               securityReviewerPromptPath: qgConfig?.securityReviewerPrompt,
             });
 
-            if (!gateResult.passed) {
-              // Gates failed — send combined feedback to agent and mark as failed
-              if (gateResult.combinedFeedback) {
-                try {
-                  await sessionManager.send(sessionId, gateResult.combinedFeedback);
-                } catch {
-                  // Best-effort send
-                }
-              }
-              updateMetadata(scanSessionsDir, scanSession.id, {
-                qualityGateStatus: "failed",
-                lastQualityGateCommit: currentHead,
-              });
-              return;
-            }
-
-            // All gates passed — update commit marker and clear status
-            updateMetadata(scanSessionsDir, scanSession.id, {
-              qualityGateStatus: "",
-              lastQualityGateCommit: currentHead,
-            });
-
-            // Send non-blocking feedback to agent if any
             if (gateResult.combinedFeedback) {
               try {
                 await sessionManager.send(sessionId, gateResult.combinedFeedback);
@@ -665,13 +633,16 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
               }
             }
 
-            // Enable auto-merge now that quality gates have passed
-            if (gatePr && gateScm?.enableAutoMerge) {
-              void gateScm.enableAutoMerge(gatePr, gateMergeMethod).catch((err: unknown) => {
-                const reason = err instanceof Error ? err.message : String(err);
-                console.warn(
-                  `[lifecycle-manager] Failed to enable auto-merge for ${sessionId} after quality gates: ${reason}`,
-                );
+            if (gateResult.passed) {
+              updateMetadata(scanSessionsDir, scanSession.id, {
+                qualityGateStatus: "",
+                lastQualityGateCommit: currentHead,
+              });
+              if (scanSession.pr) enableAutoMergeForSession(scanSession.id, projectId, scanSession.pr);
+            } else {
+              updateMetadata(scanSessionsDir, scanSession.id, {
+                qualityGateStatus: "failed",
+                lastQualityGateCommit: currentHead,
               });
             }
           } catch (err) {
@@ -733,6 +704,24 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       cleaned[key] = value;
     }
     session.metadata = cleaned;
+  }
+
+  function enableAutoMergeForSession(
+    sessionId: SessionId,
+    projectId: string,
+    pr: PRInfo,
+  ): void {
+    const project = config.projects[projectId];
+    const scm = project?.scm ? registry.get<SCM>("scm", project.scm.plugin) : null;
+    const mergeMethod = (project?.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
+    if (scm?.enableAutoMerge) {
+      void scm.enableAutoMerge(pr, mergeMethod).catch((err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[lifecycle-manager] Failed to enable auto-merge for ${sessionId}: ${reason}`,
+        );
+      });
+    }
   }
 
   function makeFingerprint(ids: string[]): string {
@@ -988,32 +977,6 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             data: { oldStatus, newStatus },
           });
           await notifyHuman(event, priority);
-        }
-      }
-
-      // Enable GitHub auto-merge when a PR is first opened, but only when quality
-      // gates are NOT configured. If a security-scan reaction is active, auto-merge
-      // is deferred until after the gates pass (see the security-scan reaction handler).
-      if (newStatus === "pr_open" && session.pr) {
-        const autoMergeProject = config.projects[session.projectId];
-        const securityScanReaction = getReactionConfigForSession(session, "security-scan");
-        const qualityGatesActive =
-          !!(securityScanReaction?.action === "security-scan" && securityScanReaction?.auto !== false);
-
-        if (!qualityGatesActive) {
-          const autoMergeScm = autoMergeProject?.scm
-            ? registry.get<SCM>("scm", autoMergeProject.scm.plugin)
-            : null;
-          const mergeMethod =
-            (autoMergeProject?.scm?.mergeMethod as MergeMethod | undefined) ?? "squash";
-          if (autoMergeScm?.enableAutoMerge) {
-            void autoMergeScm.enableAutoMerge(session.pr, mergeMethod).catch((err: unknown) => {
-              const reason = err instanceof Error ? err.message : String(err);
-              console.warn(
-                `[lifecycle-manager] Failed to enable auto-merge for ${session.id}: ${reason}`,
-              );
-            });
-          }
         }
       }
 
