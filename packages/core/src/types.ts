@@ -1024,6 +1024,8 @@ export interface ProjectConfig {
   qualityGates?: {
     /** Custom prompt to use for the review-pass gate */
     reviewerPrompt?: string;
+    /** Custom prompt to use for the security review-pass gate */
+    securityReviewerPrompt?: string;
     /** Model to use for the review-pass gate */
     reviewModel?: string;
   };

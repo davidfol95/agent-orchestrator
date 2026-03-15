@@ -176,6 +176,7 @@ const ProjectConfigSchema = z.object({
   qualityGates: z
     .object({
       reviewerPrompt: z.string().optional(),
+      securityReviewerPrompt: z.string().optional(),
       reviewModel: z.string().optional(),
     })
     .optional(),
