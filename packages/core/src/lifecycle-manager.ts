@@ -238,23 +238,30 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     let detectedIdleTimestamp: Date | null = null;
 
     // 1. Check if runtime is alive
+    // NOTE: Do NOT return "killed" here even if the runtime is dead.
+    // The agent may have exited AFTER successfully merging its PR.
+    // We need to fall through to step 4 (PR state check) to detect this.
+    // The agentExited flag is set here and resolved after PR checks.
+    let runtimeDead = false;
     if (session.runtimeHandle) {
       const runtime = registry.get<Runtime>("runtime", project.runtime ?? config.defaults.runtime);
       if (runtime) {
         const alive = await runtime.isAlive(session.runtimeHandle).catch(() => true);
-        if (!alive) return "killed";
+        if (!alive) {
+          runtimeDead = true;
+        }
       }
     }
 
     // 2. Check agent activity — prefer JSONL-based detection (runtime-agnostic)
-    let agentExited = false;
+    let agentExited = runtimeDead;
     if (agent && session.runtimeHandle) {
       try {
         // Try JSONL-based activity detection first (reads agent's session files directly)
         const activityState = await agent.getActivityState(session, config.readyThresholdMs);
         if (activityState) {
-          if (activityState.state === "waiting_input") return "needs_input";
-          if (activityState.state === "exited") {
+          if (activityState.state === "waiting_input" && !runtimeDead) return "needs_input";
+          if (activityState.state === "exited" || runtimeDead) {
             // Don't return "killed" immediately — fall through to step 4 (PR check).
             // The agent may have exited AFTER merging. If PR is merged, we should
             // return "merged" so the auto-close reaction fires.
