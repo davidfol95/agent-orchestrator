@@ -520,6 +520,8 @@ function createGitHubSCM(): SCM {
           project.repo,
           "--head",
           session.branch,
+          "--state",
+          "all",
           "--json",
           "number,url,title,headRefName,baseRefName,isDraft",
           "--limit",
