@@ -64,7 +64,7 @@ Run: \`gh pr checks --watch\`
 This blocks until all checks complete. If CI fails, read the failures, fix, push, and re-run.
 If the repo has no CI checks configured, \`gh pr checks\` returns empty — proceed to merge.
 
-### Step 5: Merge and close tracker issue
+### Step 5: Merge
 When BOTH reviews pass AND CI is green:
 \`\`\`bash
 gh pr merge --squash
@@ -73,11 +73,7 @@ Do NOT use --delete-branch (the worktree is still on this branch; cleanup handle
 If merge fails due to conflicts: \`git fetch origin ${defaultBranch} && git rebase origin/${defaultBranch}\`, resolve, force-push, and retry from Step 4.
 If merge fails due to permissions: comment on the PR requesting human merge, then exit.
 
-**Immediately after merge succeeds**, close the tracker issue:
-\`\`\`bash
-bd close <issue-id>
-\`\`\`
-If \`bd close\` fails (e.g. database connection error), wait 5 seconds and retry once. This is critical — do NOT skip this step or exit without closing the issue.
+Do not close the tracker issue manually — the orchestrator detects the merge and closes it automatically.
 
 ## Handling Failures
 - CI failures: read the output, fix, push. Do not wait for external instructions.

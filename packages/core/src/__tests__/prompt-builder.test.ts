@@ -243,7 +243,7 @@ describe("buildBasePrompt", () => {
     expect(result).toContain("Step 2: Push and create PR");
     expect(result).toContain("Step 3: Quality reviews");
     expect(result).toContain("Step 4: Wait for CI");
-    expect(result).toContain("Step 5: Merge and close tracker issue");
+    expect(result).toContain("Step 5: Merge");
   });
 
   it("convenience export matches buildBasePrompt with main", () => {
