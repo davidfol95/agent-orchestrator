@@ -247,13 +247,19 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     }
 
     // 2. Check agent activity — prefer JSONL-based detection (runtime-agnostic)
+    let agentExited = false;
     if (agent && session.runtimeHandle) {
       try {
         // Try JSONL-based activity detection first (reads agent's session files directly)
         const activityState = await agent.getActivityState(session, config.readyThresholdMs);
         if (activityState) {
           if (activityState.state === "waiting_input") return "needs_input";
-          if (activityState.state === "exited") return "killed";
+          if (activityState.state === "exited") {
+            // Don't return "killed" immediately — fall through to step 4 (PR check).
+            // The agent may have exited AFTER merging. If PR is merged, we should
+            // return "merged" so the auto-close reaction fires.
+            agentExited = true;
+          }
 
           if (
             (activityState.state === "idle" || activityState.state === "blocked") &&
@@ -276,7 +282,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
             if (activity === "waiting_input") return "needs_input";
 
             const processAlive = await agent.isProcessRunning(session.runtimeHandle);
-            if (!processAlive) return "killed";
+            if (!processAlive) {
+              // Same logic: don't return "killed" yet, check PR state first
+              agentExited = true;
+            }
           }
         }
       } catch {
@@ -358,13 +367,18 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
     }
 
-    // 5. Post-all stuck detection: if we detected idle in step 2 but had no PR,
+    // 5. If agent exited and we didn't find a merged PR above, it's truly killed.
+    // This runs after PR checks (step 4) so we only reach here when there's no
+    // merged PR — meaning the agent exited without successfully merging.
+    if (agentExited) return "killed";
+
+    // 6. Post-all stuck detection: if we detected idle in step 2 but had no PR,
     // still check stuck threshold. This handles agents that finish without creating a PR.
     if (detectedIdleTimestamp && isIdleBeyondThreshold(session, detectedIdleTimestamp)) {
       return "stuck";
     }
 
-    // 6. Default: if agent is active, it's working
+    // 7. Default: if agent is active, it's working
     if (
       session.status === "spawning" ||
       session.status === SESSION_STATUS.STUCK ||
