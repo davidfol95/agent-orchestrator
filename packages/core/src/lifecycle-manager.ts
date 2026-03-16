@@ -925,11 +925,22 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
       // Include sessions that are active OR whose status changed from what we last saw
       // (e.g., list() detected a dead runtime and marked it "killed" — we need to
-      // process that transition even though the new status is terminal)
+      // process that transition even though the new status is terminal).
+      // Also include sessions we haven't tracked yet (after restart) — their
+      // persisted metadata status may differ from what list() reports, and we
+      // need to run determineStatus to detect merged PRs.
       const sessionsToCheck = sessions.filter((s) => {
         if (s.status !== "merged" && s.status !== "killed") return true;
         const tracked = states.get(s.id);
-        return tracked !== undefined && tracked !== s.status;
+        if (tracked === undefined) {
+          // After restart: no tracked state. Check if metadata status differs
+          // from what list() set — if so, we need to process the transition.
+          // Also always check "killed" sessions at least once (they may have
+          // merged PRs that we haven't detected yet).
+          const metadataStatus = s.metadata?.["status"] as string | undefined;
+          return !metadataStatus || metadataStatus !== s.status;
+        }
+        return tracked !== s.status;
       });
 
       // Poll all sessions concurrently
